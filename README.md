@@ -116,7 +116,7 @@ no idea which of its images is a door and which is a barrel.
 ## Verification
 
 ```bash
-cargo test                                  # 89 tests
+cargo test                                  # 92 tests
 cargo clippy --all-targets -- -D warnings
 cargo run -p wolf3d --bin frames -- --frames --ascii
 ```
@@ -142,3 +142,7 @@ files are real screenshots of the running binary. There is a page to look at the
 - Mouse look reads relative motion and does not hide or lock the cursor.
 - The sound is synthesised: it is meant to sit in the same register as the original, not to
   reproduce it.
+
+## License
+
+MIT. See [LICENSE](LICENSE). The vendored engine in `crates/raycaster` is MIT as well.
