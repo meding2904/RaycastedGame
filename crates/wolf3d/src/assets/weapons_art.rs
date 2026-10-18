@@ -1,214 +1,226 @@
-//! The weapon in the player's hands, drawn at 64x64 and blitted into the bottom of the view.
+//! The weapon in the player's hands, drawn at 128x128 and blitted into the bottom of the view.
 //!
-//! The composition follows the 1992 original rather than inventing one: a small gun centred just
-//! above the bottom edge, two compact hands wrapped round the grip, sleeves running off the
-//! corners, and a short red flash on the frames that fire. Keeping the gun small is what makes it
-//! read as a weapon held at arm's length instead of a prop pasted over the view.
+//! The look follows Wolfenstein 3D's weapon sprites: each weapon is small, sits at the bottom
+//! centre of the cell and is seen from directly behind, so the guns are narrow cones that widen
+//! towards the player. Everything is drawn on a coarse 64x64 art grid whose pixels are doubled.
+//! Sleeves are grey, fists are peach, the pistol is near black, the machine gun is striped silver,
+//! the chaingun is teal, and the muzzle flash is a jagged red, orange and yellow star.
 use super::{sprites::WeaponKind, Atlas, Canvas};
 
-/// Weapons share the 64 pixel cell size of the other sprites
-pub const WEAPON_CELL: i32 = 64;
+/// Weapons are drawn at this size, unlike the 64 pixel actor cells
+pub const WEAPON_CELL: i32 = 128;
 
-const STEEL_DARK: [u8; 4] = [22, 24, 30, 255];
-const STEEL: [u8; 4] = [74, 78, 88, 255];
-const STEEL_LIT: [u8; 4] = [126, 132, 144, 255];
-const STEEL_HI: [u8; 4] = [206, 212, 222, 255];
-const BORE: [u8; 4] = [10, 10, 14, 255];
+/// Each art pixel is `SCALE` x `SCALE` real pixels, which gives the chunky look
+const SCALE: i32 = 2;
+/// Side of the art grid, in art pixels
+const GRID: i32 = WEAPON_CELL / SCALE;
+/// Centre line of every weapon on the art grid
+const CX: i32 = 32;
 
-const SKIN: [u8; 4] = [214, 154, 110, 255];
-const SKIN_LIT: [u8; 4] = [244, 194, 150, 255];
-const SKIN_DEEP: [u8; 4] = [112, 66, 42, 255];
+type Rgba = [u8; 4];
 
-const SLEEVE: [u8; 4] = [78, 88, 66, 255];
-const SLEEVE_LIT: [u8; 4] = [112, 124, 94, 255];
-const CUFF: [u8; 4] = [52, 42, 32, 255];
-
-const WOOD: [u8; 4] = [92, 58, 34, 255];
-const WOOD_LIT: [u8; 4] = [136, 92, 52, 255];
-const BRASS: [u8; 4] = [190, 152, 66, 255];
-const FLASH: [u8; 4] = [255, 170, 60, 255];
-const FLASH_HOT: [u8; 4] = [255, 246, 190, 255];
-const FLASH_RIM: [u8; 4] = [206, 62, 32, 255];
-const RIM: [u8; 4] = [12, 10, 14, 255];
-
-fn shade(color: [u8; 4], delta: i32) -> [u8; 4] {
-    let f = |v: u8| (v as i32 + delta).clamp(0, 255) as u8;
-    [f(color[0]), f(color[1]), f(color[2]), color[3]]
+const fn rgb(r: u8, g: u8, b: u8) -> Rgba {
+    [r, g, b, 255]
 }
 
-fn tri(c: &mut Canvas, a: (i32, i32), b: (i32, i32), d: (i32, i32), color: [u8; 4]) {
-    let min_x = a.0.min(b.0).min(d.0);
-    let max_x = a.0.max(b.0).max(d.0);
-    let min_y = a.1.min(b.1).min(d.1);
-    let max_y = a.1.max(b.1).max(d.1);
-    let edge = |p: (i32, i32), q: (i32, i32), x: i32, y: i32| {
-        (q.0 - p.0) as f32 * (y - p.1) as f32 - (q.1 - p.1) as f32 * (x - p.0) as f32
-    };
-    for y in min_y..=max_y {
-        for x in min_x..=max_x {
-            let w0 = edge(b, d, x, y);
-            let w1 = edge(d, a, x, y);
-            let w2 = edge(a, b, x, y);
-            if (w0 >= 0.0 && w1 >= 0.0 && w2 >= 0.0) || (w0 <= 0.0 && w1 <= 0.0 && w2 <= 0.0) {
-                c.set(x, y, color);
+// Grey cloth sleeves
+const CLOTH_DARK: Rgba = rgb(92, 92, 96);
+const CLOTH: Rgba = rgb(152, 152, 156);
+const CLOTH_LIT: Rgba = rgb(196, 196, 200);
+
+// Skin
+const SKIN_LIT: Rgba = rgb(255, 216, 168);
+const SKIN: Rgba = rgb(252, 172, 124);
+const SKIN_DARK: Rgba = rgb(222, 128, 72);
+
+// Pistol
+const GUN_BLACK: Rgba = rgb(28, 28, 32);
+const GUN_DARK: Rgba = rgb(62, 62, 68);
+const GUN: Rgba = rgb(108, 108, 114);
+const GUN_LIT: Rgba = rgb(176, 176, 182);
+
+// Knife
+const BLADE_WHITE: Rgba = rgb(250, 250, 252);
+const BLADE_LIT: Rgba = rgb(206, 206, 210);
+const BLADE: Rgba = rgb(160, 160, 166);
+const BLADE_DARK: Rgba = rgb(100, 100, 106);
+const HILT: Rgba = rgb(52, 56, 52);
+
+// Machine gun, darkest to brightest
+const SILVER_RAMP: [Rgba; 5] = [
+    rgb(40, 40, 46),
+    rgb(98, 98, 104),
+    rgb(152, 152, 158),
+    rgb(204, 204, 210),
+    rgb(246, 246, 250),
+];
+const BORE: Rgba = rgb(16, 16, 20);
+
+// Chaingun, darkest to brightest
+const TEAL_RAMP: [Rgba; 5] = [
+    rgb(0, 48, 52),
+    rgb(0, 104, 108),
+    rgb(24, 160, 164),
+    rgb(110, 214, 216),
+    rgb(214, 252, 252),
+];
+const RING_GREY: Rgba = rgb(116, 118, 124);
+
+// Muzzle flash, outside in
+const FLASH_EDGE: Rgba = rgb(138, 0, 0);
+const FLASH_RED: Rgba = rgb(226, 20, 16);
+const FLASH_ORANGE: Rgba = rgb(255, 132, 16);
+const FLASH_YELLOW: Rgba = rgb(255, 234, 70);
+const FLASH_WHITE: Rgba = rgb(255, 255, 232);
+
+// ---------------------------------------------------------------------------------------------
+// Primitives. Every coordinate below is on the 64x64 art grid and is clipped to it.
+// ---------------------------------------------------------------------------------------------
+
+fn dot(c: &mut Canvas, x: i32, y: i32, color: Rgba) {
+    if x < 0 || y < 0 || x >= GRID || y >= GRID {
+        return;
+    }
+    c.rect(x * SCALE, y * SCALE, SCALE, SCALE, color);
+}
+
+fn row(c: &mut Canvas, x: i32, y: i32, w: i32, color: Rgba) {
+    for i in 0..w {
+        dot(c, x + i, y, color);
+    }
+}
+
+fn disc(c: &mut Canvas, cx: i32, cy: i32, r: i32, color: Rgba) {
+    for dy in -r..=r {
+        for dx in -r..=r {
+            if dx * dx + dy * dy <= r * r + r {
+                dot(c, cx + dx, cy + dy, color);
             }
         }
     }
 }
 
-fn quad(
-    c: &mut Canvas,
-    a: (i32, i32),
-    b: (i32, i32),
-    d: (i32, i32),
-    e: (i32, i32),
-    color: [u8; 4],
-) {
-    tri(c, a, b, d, color);
-    tri(c, a, d, e, color);
-}
-
-fn limb(c: &mut Canvas, a: (i32, i32), b: (i32, i32), radius: i32, color: [u8; 4]) {
+/// A stamped thick line, used for sleeves and arms
+fn limb(c: &mut Canvas, a: (i32, i32), b: (i32, i32), radius: i32, color: Rgba) {
     let steps = ((b.0 - a.0).abs().max((b.1 - a.1).abs())).max(1);
     for i in 0..=steps {
         let t = i as f32 / steps as f32;
         let x = a.0 as f32 + (b.0 - a.0) as f32 * t;
         let y = a.1 as f32 + (b.1 - a.1) as f32 * t;
-        c.circle(x as i32, y as i32, radius, color);
+        disc(c, x.round() as i32, y.round() as i32, radius, color);
     }
 }
 
-/// A gunmetal box with a lit left edge and a shadowed right one, which is the light direction
-/// the original sprites use
-fn metal(c: &mut Canvas, x: i32, y: i32, w: i32, h: i32, base: [u8; 4]) {
-    c.rect(x, y, w, h, base);
-    c.vline(x, y, h, shade(base, 46));
-    c.vline(x + 1, y, h, shade(base, 20));
-    c.vline(x + w - 1, y, h, shade(base, -34));
-    c.hline(x, y, w, shade(base, 30));
-    c.hline(x, y + h - 1, w, shade(base, -40));
-}
-
-/// The muzzle seen from behind: steel ring, dark bore, lit top edge
-fn muzzle(c: &mut Canvas, cx: i32, cy: i32, rx: i32, ry: i32) {
-    c.ellipse(cx, cy, rx, ry, STEEL_DARK);
-    c.ellipse(cx, cy - 1, (rx - 1).max(1), (ry - 1).max(1), STEEL_LIT);
-    c.ellipse(cx, cy, (rx - 2).max(1), (ry - 2).max(1), BORE);
-}
-
-fn forearm(c: &mut Canvas, shoulder: (i32, i32), wrist: (i32, i32), radius: i32) {
-    limb(c, shoulder, wrist, radius, SLEEVE);
-    limb(
-        c,
-        (shoulder.0 - radius / 2, shoulder.1),
-        (wrist.0 - radius / 2, wrist.1),
-        (radius / 2).max(1),
-        SLEEVE_LIT,
-    );
-    c.circle(wrist.0, wrist.1, radius, CUFF);
-}
-
-/// The silhouette of a fist gripping a vertical grip, seen from the shooter's side: four
-/// knuckles along the top and the mass of the hand below.
-const HAND: [&str; 8] = [
-    "...#.#.#.#.....",
-    "..##.##.##.....",
-    ".#############.",
-    "##############.",
-    "##############.",
-    ".############..",
-    "..##########...",
-    "...########....",
-];
-
-/// Blits a silhouette with a one pixel dark rim and shading from the top down, which is how the
-/// hands keep a readable shape without a pixel table per pose
-fn blob(c: &mut Canvas, mask: &[&str], x: i32, y: i32, flip: bool, tone: i32) {
-    let w = mask[0].len() as i32;
-    let h = mask.len() as i32;
-    let solid = |mx: i32, my: i32| -> bool {
-        if mx < 0 || my < 0 || mx >= w || my >= h {
-            return false;
+/// An oval whose colour is chosen per pixel from its position inside it, each axis running -1..1
+fn oval_shaded(
+    c: &mut Canvas,
+    cx: i32,
+    cy: i32,
+    rx: i32,
+    ry: i32,
+    color: impl Fn(f32, f32) -> Rgba,
+) {
+    for dy in -ry..=ry {
+        for dx in -rx..=rx {
+            if dx * dx * ry * ry + dy * dy * rx * rx <= rx * rx * ry * ry + rx * ry {
+                dot(
+                    c,
+                    cx + dx,
+                    cy + dy,
+                    color(dx as f32 / rx as f32, dy as f32 / ry as f32),
+                );
+            }
         }
-        let col = if flip { w - 1 - mx } else { mx } as usize;
-        mask[my as usize].as_bytes()[col] == b'#'
-    };
-    let px_of = |mx: i32| x + if flip { w - 1 - mx } else { mx };
+    }
+}
 
-    for my in 0..h {
-        for mx in 0..w {
-            if !solid(mx, my) {
+/// Stamps rows of pixel art, each row centred on `cx`. A space is left transparent.
+fn art(c: &mut Canvas, cx: i32, top: i32, rows: &[&str], palette: impl Fn(char) -> Rgba) {
+    for (j, line) in rows.iter().enumerate() {
+        let half = line.len() as i32 / 2;
+        for (i, ch) in line.chars().enumerate() {
+            if ch != ' ' {
+                dot(c, cx - half + i as i32, top + j as i32, palette(ch));
+            }
+        }
+    }
+}
+
+/// Steps a colour down a ramp, to shade it
+fn ramp_pick(ramp: &[Rgba; 5], level: i32) -> Rgba {
+    ramp[level.clamp(0, 4) as usize]
+}
+
+// ---------------------------------------------------------------------------------------------
+// Shared parts
+// ---------------------------------------------------------------------------------------------
+
+/// A peach fist, lit on the upper left and shaded on the right
+fn fist(c: &mut Canvas, cx: i32, cy: i32, rx: i32, ry: i32) {
+    oval_shaded(c, cx, cy, rx, ry, |nx, ny| {
+        if nx > 0.5 || ny > 0.7 {
+            SKIN_DARK
+        } else if nx < -0.1 && ny < 0.2 {
+            SKIN_LIT
+        } else {
+            SKIN
+        }
+    });
+}
+
+/// Cloth with a little weave so it does not read as a flat block
+fn cloth(x: i32, y: i32, edge: i32, half: i32) -> Rgba {
+    if edge < 2 {
+        CLOTH_LIT
+    } else if edge >= half * 2 - 1 || (x * 3 + y * 5) % 7 == 0 {
+        CLOTH_DARK
+    } else {
+        CLOTH
+    }
+}
+
+/// A jagged starburst of dark red, red, orange, yellow and a white core. `aspect` stretches it
+/// sideways and `down` is how many rows it may reach below its centre, since the gun hides the rest.
+fn flash(c: &mut Canvas, cx: i32, cy: i32, size: f32, aspect: f32, spikes: i32, down: i32) {
+    const JITTER: [f32; 11] = [1.0, 0.78, 1.14, 0.9, 1.06, 0.72, 1.1, 0.84, 1.18, 0.8, 0.95];
+    let layers = [
+        (1.0, FLASH_EDGE),
+        (0.88, FLASH_RED),
+        (0.64, FLASH_ORANGE),
+        (0.42, FLASH_YELLOW),
+    ];
+    let reach_x = (size * aspect * 1.2) as i32 + 2;
+    let reach_y = (size * 1.2) as i32 + 2;
+    for y in (cy - reach_y)..=(cy + down) {
+        for x in (cx - reach_x)..=(cx + reach_x) {
+            let dx = (x - cx) as f32 / aspect;
+            let dy = (y - cy) as f32;
+            let r = (dx * dx + dy * dy).sqrt();
+            let turn = dy.atan2(dx) / std::f32::consts::TAU + 1.0;
+            let k = turn * spikes as f32;
+            let frac = k - k.floor();
+            let valley = (2.0 * frac - 1.0).abs();
+            let jitter = JITTER[(k.floor() as usize) % JITTER.len()];
+            let edge = size * (1.0 - 0.6 * valley) * jitter;
+
+            if r <= size * 0.2 {
+                dot(c, x, y, FLASH_WHITE);
                 continue;
             }
-            let edge = !solid(mx - 1, my)
-                || !solid(mx + 1, my)
-                || !solid(mx, my - 1)
-                || !solid(mx, my + 1);
-            let px = px_of(mx);
-            if edge {
-                c.set(px, y + my, RIM);
-                continue;
+            let mut painted = None;
+            for (scale, color) in layers {
+                if r <= edge * scale {
+                    painted = Some(color);
+                }
             }
-            let color = if my == 0 { SKIN_LIT } else { SKIN };
-            c.set(px, y + my, shade(color, tone));
-        }
-    }
-
-    for mx in 0..w {
-        if solid(mx, h - 1) {
-            c.set(px_of(mx), y + h - 1, shade(SKIN_DEEP, tone));
-        }
-    }
-}
-
-/// One hand wrapped round a grip. `palm` is the top left of the fist. `side` is -1 for the left
-/// hand and 1 for the right, which is the same fist mirrored.
-fn hand(c: &mut Canvas, palm: (i32, i32), side: i32, reach: i32, tone: i32) {
-    let (px, py) = palm;
-    let flip = side < 0;
-    blob(c, &HAND, px, py, flip, tone);
-
-    // Thumb and fingertips reaching round the far side of the grip
-    let inner = if flip { px + 11 } else { px + 2 };
-    limb(
-        c,
-        (inner, py + 6),
-        (reach, py + 7),
-        1,
-        shade(SKIN_DEEP, tone),
-    );
-    limb(c, (inner, py + 7), (reach, py + 8), 1, shade(SKIN, tone));
-}
-
-fn clear_at(c: &Canvas, x: i32, y: i32) -> bool {
-    if x < 0 || y < 0 || x >= c.width || y >= c.height {
-        return true;
-    }
-    let off = ((c.oy + y) * c.stride + c.ox + x) as usize * 4;
-    off + 4 > c.data.len() || c.data[off + 3] == 0
-}
-
-/// A dark rim round the silhouette, kept off the cell edges so the sprite does not get framed
-fn outline(c: &mut Canvas) {
-    let mut rim = Vec::new();
-    for y in 1..c.height - 1 {
-        for x in 1..c.width - 1 {
-            if !clear_at(c, x, y) {
-                continue;
-            }
-            if [(1, 0), (-1, 0), (0, 1), (0, -1)]
-                .iter()
-                .any(|(dx, dy)| !clear_at(c, x + dx, y + dy))
-            {
-                rim.push((x, y));
+            if let Some(color) = painted {
+                dot(c, x, y, color);
             }
         }
     }
-    for (x, y) in rim {
-        c.set(x, y, RIM);
-    }
 }
 
+/// Draws one weapon frame into a `WEAPON_CELL` sized cell
 pub fn draw(c: &mut Canvas, kind: WeaponKind, frame: usize) {
     match kind {
         WeaponKind::Knife => knife(c, frame),
@@ -216,182 +228,245 @@ pub fn draw(c: &mut Canvas, kind: WeaponKind, frame: usize) {
         WeaponKind::MachineGun => machine_gun(c, frame),
         WeaponKind::Chaingun => chaingun(c, frame),
     }
-    outline(c);
 }
 
-/// A knife in the right hand, blade up: it leans back on the windup and drives forward on the stab
+// ---------------------------------------------------------------------------------------------
+// Weapons
+// ---------------------------------------------------------------------------------------------
+
+/// A small combat knife held point up and slightly away, in a fist at the end of a grey sleeve.
+/// Frame 0 is the ready pose; later frames thrust it forward and up.
 fn knife(c: &mut Canvas, frame: usize) {
-    let thrust = if frame > 0 { 5 } else { 0 };
-    let (hx, hy) = (44, 48 - thrust);
+    let (tx, ty, arm) = if frame > 0 { (29, 40, 6) } else { (33, 45, 4) };
 
-    // Blade, angled up and to the right from the fist
-    quad(
+    // Sleeve running off the bottom right edge, lighter on its upper left
+    let from = (tx + 9, ty + 14);
+    let to = (tx + 31, ty + 38);
+    limb(c, from, to, arm, CLOTH_DARK);
+    limb(
         c,
-        (hx - 1, hy - 2),
-        (hx + 5, hy - 2),
-        (hx + 3, hy - 26),
-        (hx + 1, hy - 26),
-        STEEL,
+        (from.0 - 1, from.1 - 1),
+        (to.0 - 1, to.1 - 1),
+        arm - 1,
+        CLOTH,
     );
-    quad(
+    limb(
         c,
-        (hx - 1, hy - 2),
-        (hx + 1, hy - 2),
-        (hx, hy - 26),
-        (hx + 1, hy - 26),
-        STEEL_HI,
+        (from.0 - 2, from.1 - 2),
+        (to.0 - 2, to.1 - 2),
+        (arm - 3).max(0),
+        CLOTH_LIT,
     );
-    c.set(hx + 2, hy - 27, STEEL_LIT);
-    c.vline(hx + 4, hy - 5, 3, STEEL_DARK);
 
-    // Guard, then the fist closed round the handle
-    c.hline(hx - 4, hy - 2, 12, BRASS);
-    c.hline(hx - 3, hy - 1, 10, shade(BRASS, -60));
-    c.rect(hx - 1, hy, 6, 9, WOOD);
-    c.vline(hx, hy, 9, WOOD_LIT);
-    forearm(c, (62, 70), (50, 56), 6);
-    hand(c, (34, hy + 2), 1, hx - 8, 0);
-    forearm(c, (2, 70), (16, 60), 7);
-    hand(c, (18, hy + 6), -1, hx + 6, -18);
+    // Fist behind the guard
+    fist(c, tx + 7, ty + 13, 5, 3);
 
-    if frame > 0 {
-        for i in 0..3 {
-            c.hline(
-                hx - 2,
-                hy - 18 + i * 3,
-                6,
-                [236, 242, 252, 180 - i as u8 * 50],
-            );
+    // Blade: a wedge with a bright vertical edge, widening towards the guard
+    for i in 0..9 {
+        let width = 1 + (i as f32 * 1.3).round() as i32;
+        for k in 0..width {
+            let color = if k == 0 || (k == 1 && i >= 4) {
+                BLADE_WHITE
+            } else if k + 1 == width {
+                BLADE_DARK
+            } else if k * 3 < width * 2 {
+                BLADE_LIT
+            } else {
+                BLADE
+            };
+            dot(c, tx + k, ty + i, color);
         }
     }
+
+    // Dark crossguard with its two ends curling down round the fist
+    row(c, tx - 1, ty + 9, 13, HILT);
+    row(c, tx - 1, ty + 10, 2, HILT);
+    row(c, tx + 11, ty + 10, 2, HILT);
 }
 
-/// The service pistol: a small black body held in both hands, front sight up, red flash on firing
+/// The sidearm: a small near-black pistol seen end on, above a single fist and two grey cuffs.
+/// Frame 0 is the ready pose, frame 1 fires and frame 2 is the kick, with the gun thrown upwards.
 fn pistol(c: &mut Canvas, frame: usize) {
-    let recoil = match frame {
-        1 => 2,
-        2 => 4,
-        _ => 0,
-    };
-    let top = 38 - recoil;
-    let cx = 32;
+    let lift = if frame == 2 { 5 } else { 0 };
+    let top = 40 - lift;
 
-    // Slide and frame
-    metal(c, cx - 8, top, 16, 17, STEEL);
-    c.vline(cx - 7, top + 1, 15, STEEL_LIT);
-    c.hline(cx - 8, top, 16, STEEL_HI);
-    c.rect(cx - 1, top - 3, 3, 3, STEEL_DARK);
-    c.set(cx, top - 3, STEEL_LIT);
-    c.rect(cx - 4, top + 7, 5, 4, BORE);
-    c.hline(cx - 8, top + 16, 16, STEEL_LIT);
-
-    // Grip running down between the hands
-    c.rect(cx - 4, top + 17, 9, 8, WOOD);
-    c.vline(cx - 4, top + 17, 8, WOOD_LIT);
-    c.vline(cx + 4, top + 17, 8, STEEL_DARK);
-
-    // Right hand on the grip, left hand braced under it, sleeves off the corners
-    forearm(c, (68, 76), (52, 62), 6);
-    hand(c, (31, 49), 1, 26, 0);
-    forearm(c, (-4, 76), (12, 64), 7);
-    hand(c, (18, 54), -1, 36, -18);
-
-    if frame > 0 {
-        flash(c, cx, top - 3, if frame == 1 { 9 } else { 6 });
-    }
-}
-
-/// The machine gun: a short perforated shroud, and a wide flash when it fires
-fn machine_gun(c: &mut Canvas, frame: usize) {
-    let recoil = match frame {
-        1 => 2,
-        2 => 4,
-        _ => 0,
-    };
-    let top = 30 - recoil;
-    let cx = 31;
-
-    metal(c, cx - 9, top, 18, 20, STEEL);
-    for i in 0..3 {
-        c.rect(cx - 6 + i * 5, top + 4, 2, 3, BORE);
-        c.rect(cx - 6 + i * 5, top + 11, 2, 3, BORE);
-    }
-    muzzle(c, cx, top + 1, 8, 3);
-    c.hline(cx - 9, top - 1, 18, STEEL_HI);
-    metal(c, cx - 10, top + 20, 20, 10, shade(STEEL, -14));
-
-    c.rect(cx - 3, top + 30, 7, 8, WOOD);
-    c.vline(cx - 3, top + 30, 8, WOOD_LIT);
-
-    forearm(c, (68, 76), (52, 60), 6);
-    hand(c, (29, 47), 1, 25, 0);
-    forearm(c, (-4, 76), (12, 62), 7);
-    hand(c, (16, 52), -1, 35, -18);
-
-    if frame > 0 {
-        flash(c, cx, top - 2, if frame == 1 { 12 } else { 8 });
-    }
-}
-
-/// The chaingun: four barrels in a spinning cluster above a boxy housing
-fn chaingun(c: &mut Canvas, frame: usize) {
-    let recoil = match frame {
-        1 => 2,
-        2 => 3,
-        3 => 2,
-        _ => 0,
-    };
-    let top = 24 - recoil;
-    let cx = 31;
-    let spin = frame as f32 * std::f32::consts::FRAC_PI_4;
-
-    for i in 0..4 {
-        let angle = spin + i as f32 * std::f32::consts::FRAC_PI_2;
-        let bx = cx + (angle.cos() * 4.0) as i32;
-        let by = top + 8 + (angle.sin() * 2.0) as i32;
-        c.rect(bx - 2, by - 8, 4, 12, STEEL);
-        c.vline(bx - 2, by - 8, 12, STEEL_LIT);
-        c.vline(bx + 1, by - 8, 12, STEEL_DARK);
-        muzzle(c, bx, by - 8, 2, 1);
-    }
-    c.ellipse(cx, top + 2, 8, 4, STEEL_DARK);
-    c.ellipse(cx, top + 1, 7, 3, STEEL_LIT);
-
-    metal(c, cx - 9, top + 12, 18, 8, STEEL_LIT);
-    metal(c, cx - 10, top + 20, 20, 12, shade(STEEL, -10));
-    for i in 0..2 {
-        c.hline(cx - 7, top + 23 + i * 4, 14, STEEL_DARK);
-    }
-    c.rect(cx - 3, top + 22, 6, 6, STEEL_DARK);
-
-    // Ammo belt feeding in from the left
-    for i in 0..3 {
-        c.rect(cx - 14, top + 21 + i * 4, 7, 2, BRASS);
-    }
-
-    c.rect(cx - 3, top + 32, 7, 8, WOOD);
-    forearm(c, (68, 76), (52, 60), 6);
-    hand(c, (29, 49), 1, 25, 0);
-    forearm(c, (-4, 76), (12, 62), 7);
-    hand(c, (16, 54), -1, 35, -18);
-
-    if frame > 0 {
-        flash(c, cx, top - 2, if frame == 1 { 11 } else { 7 });
-    }
-}
-
-/// A short muzzle flash: hot core ringed in orange, with a red rim that reads at 320x200
-fn flash(c: &mut Canvas, cx: i32, cy: i32, size: i32) {
-    c.circle(cx, cy, size, FLASH_RIM);
-    c.circle(cx, cy, (size - 1).max(1), FLASH);
-    c.circle(cx, cy, (size / 2).max(1), FLASH_HOT);
-    for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
-        for step in 2..=size {
-            c.set(cx + dx * step, cy + dy * step, FLASH);
+    // Cuffs either side of the wrist, with a dark gap between them
+    let cuff_top = 58 - lift;
+    for y in cuff_top..GRID {
+        let half = 7 + (y - cuff_top) * 5 / (GRID - cuff_top).max(1);
+        for x in (CX - half)..=(CX + half) {
+            let color = if (x - CX).abs() <= 2 {
+                CLOTH_DARK
+            } else {
+                cloth(x, y, x - (CX - half), half)
+            };
+            dot(c, x, y, color);
         }
     }
-    c.set(cx + 1, cy - size - 1, FLASH_RIM);
-    c.set(cx - 1, cy + size + 1, FLASH_RIM);
+
+    fist(c, CX, 55 - lift, 7, 6);
+
+    // The gun itself: sight, barrel, then the squat dark body that fills the hand
+    const PISTOL: [&str; 13] = [
+        "d",
+        "dld",
+        "dld",
+        "dgd",
+        "kgldk",
+        "kgldk",
+        "kgllgdk",
+        "kglgddk",
+        "kglgdkk",
+        "kgldddk",
+        "kdglddddk",
+        "kdgdddddk",
+        "kddddddkk",
+    ];
+    let barrel = if lift > 0 { 2 } else { 0 };
+    // A longer barrel shows as the gun is thrown up by repeating its middle rows
+    for extra in 0..barrel {
+        art(c, CX, top + extra, &PISTOL[1..2], gun_pixel);
+    }
+    art(c, CX, top + barrel, &PISTOL, gun_pixel);
+
+    match frame {
+        1 => flash(c, CX, top - 3, 4.5, 1.2, 7, 1),
+        2 => flash(c, CX, top - 3, 2.5, 1.2, 7, 0),
+        _ => {}
+    }
+}
+
+fn gun_pixel(ch: char) -> Rgba {
+    match ch {
+        'k' => GUN_BLACK,
+        'd' => GUN_DARK,
+        'g' => GUN,
+        _ => GUN_LIT,
+    }
+}
+
+/// The machine gun: a pointed silver shroud with vent bands, a dark open rear and a grey sleeve
+/// reaching in from the left. Frame 0 is ready, frame 1 fires and frame 2 is the kick.
+fn machine_gun(c: &mut Canvas, frame: usize) {
+    let tip = if frame == 2 { 43 } else { 46 };
+
+    // Left arm with the edge of a hand where it meets the gun
+    let arm_y = tip + 14;
+    limb(c, (11, arm_y + 9), (27, arm_y + 1), 2, CLOTH);
+    limb(c, (11, arm_y + 7), (27, arm_y - 1), 0, CLOTH_LIT);
+    limb(c, (11, arm_y + 11), (27, arm_y + 3), 0, CLOTH_DARK);
+    dot(c, 27, arm_y, SKIN);
+    dot(c, 28, arm_y, SKIN_DARK);
+    dot(c, 28, arm_y + 1, SKIN_DARK);
+
+    for y in tip..GRID {
+        let into = y - tip;
+        let half = if into < 3 {
+            1.0
+        } else {
+            1.5 + (into - 3) as f32 * 0.43
+        };
+        let reach = half.round() as i32;
+        for x in (CX - reach)..=(CX + reach) {
+            let u = (x - CX) as f32 / half.max(1.0);
+            if into < 3 {
+                let color = if u.abs() < 0.5 {
+                    SILVER_RAMP[0]
+                } else {
+                    SILVER_RAMP[1]
+                };
+                dot(c, x, y, color);
+                continue;
+            }
+            let mut level = if u < -0.55 {
+                3
+            } else if u < 0.1 {
+                4
+            } else if u < 0.5 {
+                2
+            } else {
+                1
+            };
+            // Vent bands every few rows
+            if into % 4 == 0 {
+                level -= 1;
+            }
+            let color = if into >= 15 && (x - CX).abs() <= 2 {
+                BORE
+            } else {
+                ramp_pick(&SILVER_RAMP, level)
+            };
+            dot(c, x, y, color);
+        }
+    }
+
+    match frame {
+        1 => flash(c, CX + 1, tip - 1, 11.0, 1.6, 10, 8),
+        2 => flash(c, CX + 1, tip - 2, 4.0, 1.4, 8, 1),
+        _ => {}
+    }
+}
+
+/// The chaingun: a big teal cone of brushed metal under a dark muzzle ring. Frame 0 is ready,
+/// frames 1 and 2 fire with the gun rising, and frame 3 settles back down.
+fn chaingun(c: &mut Canvas, frame: usize) {
+    // Ring row, half width under the ring and half width at the bottom of the view
+    let (ring, hw_top, hw_bot) = match frame {
+        1 => (46, 7.0, 17.0),
+        2 => (44, 8.0, 21.0),
+        3 => (50, 6.0, 15.0),
+        _ => (46, 7.0, 17.0),
+    };
+    let firing = frame == 1 || frame == 2;
+    let phase = frame as i32;
+
+    // Cone of brushed metal: bright streaks that crawl a little each frame
+    for y in (ring + 2)..GRID {
+        let t = (y - ring - 2) as f32 / (GRID - ring - 3).max(1) as f32;
+        let half = hw_top + (hw_bot - hw_top) * t;
+        let reach = half.round() as i32;
+        for x in (CX - reach)..=(CX + reach) {
+            let u = (x - CX) as f32 / half;
+            let streak = (x * 7 + y / 6 + phase * 3).rem_euclid(5) as usize;
+            let mut level = [4, 3, 3, 2, 2][streak];
+            level -= if u < -0.2 {
+                0
+            } else if u < 0.35 {
+                1
+            } else if u < 0.8 {
+                2
+            } else {
+                3
+            };
+            dot(c, x, y, ramp_pick(&TEAL_RAMP, level));
+        }
+    }
+
+    // Dome over the barrels, then the dark ring they sit in
+    let dome = hw_top.round() as i32 + 1;
+    oval_shaded(c, CX, ring - 1, dome, 4, |nx, ny| {
+        if ny < -0.6 {
+            TEAL_RAMP[3]
+        } else if nx < -0.3 {
+            TEAL_RAMP[2]
+        } else {
+            TEAL_RAMP[1]
+        }
+    });
+    dot(c, CX, ring - 4, TEAL_RAMP[4]);
+    dot(c, CX - 1, ring - 3, TEAL_RAMP[4]);
+    row(c, CX - dome, ring, dome * 2 + 1, TEAL_RAMP[0]);
+    row(c, CX - dome, ring + 1, dome * 2 + 1, TEAL_RAMP[0]);
+    if firing {
+        // The flash lights the rim of the muzzle
+        row(c, CX - dome + 1, ring - 1, dome * 2 - 1, RING_GREY);
+    }
+
+    match frame {
+        1 => flash(c, CX + 1, ring - 1, 14.0, 1.8, 12, 9),
+        2 => flash(c, CX + 1, ring - 3, 16.0, 1.5, 12, 9),
+        _ => {}
+    }
 }
 
 /// Builds the weapon atlas: one `WEAPON_CELL` cell per animation frame, in `WeaponKind` order
@@ -434,13 +509,13 @@ mod tests {
                         continue;
                     }
                     painted += 1;
-                    // Sleeves run off the bottom corners, but nothing frames the cell
-                    let on_edge = y == 0 || (y < cell * 2 / 3 && (x == 0 || x == cell - 1));
+                    let on_edge = x == 0 || x == cell - 1;
                     assert!(!on_edge, "cell {index} paints the edge at ({x}, {y})");
                 }
             }
 
-            assert!(painted > cell * cell / 16, "cell {index} is nearly empty");
+            // Weapons are small in the cell, as in the original sprites
+            assert!(painted > cell * cell / 64, "cell {index} is nearly empty");
         }
     }
 }
