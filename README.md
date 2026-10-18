@@ -4,8 +4,6 @@ A Wolfenstein 3D style shooter in Rust, built on top of
 [`markusmoenig/raycaster`](https://github.com/markusmoenig/raycaster), with procedurally generated
 art and sound so the whole game is a single self-contained build.
 
-![the game running](docs/gallery/window_play.png)
-
 - **Memory safe.** Both crates are `#![forbid(unsafe_code)]`. The only FFI is inside the windowing
   and audio crates, which every desktop app needs.
 - **Cross platform.** Windows, macOS and Linux, built and tested on all three in CI. No C toolchain,
