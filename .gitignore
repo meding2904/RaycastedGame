@@ -1,0 +1,3 @@
+target/
+assets/cc0/*
+!assets/cc0/.gitkeep

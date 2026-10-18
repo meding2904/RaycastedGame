@@ -1,0 +1,12 @@
+# CC0 art packs for `tools/fetch_assets.sh`.
+#
+# Format, one pack per line:
+#   <folder>  <url>  <sha256>  <license>
+#
+# The script verifies the hash before unpacking, so a pack that changes upstream is skipped
+# instead of silently becoming a different download. Add your own lines: anything CC0 or public
+# domain works, and a bad entry never breaks the build, the script just warns.
+#
+# The game itself never needs any of this: without these files it generates its own art.
+
+ugly64x64   https://opengameart.org/sites/default/files/pack.zip   661648dbf303f4ac8f13b7f172c158684ec14f077707149e30980bcf52ed5d20   CC0

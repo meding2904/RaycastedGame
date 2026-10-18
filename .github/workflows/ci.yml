@@ -1,0 +1,49 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      # rodio's cpal backend needs ALSA headers on Linux; nothing else has a system dependency
+      - name: Install ALSA headers
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+
+      - name: Format
+        run: cargo fmt -p wolf3d -- --check
+
+      - name: Clippy
+        run: cargo clippy -p wolf3d --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace
+
+      - name: Build
+        run: cargo build --release --workspace
+
+      # The headless harness is the visual check: if it cannot render a lit frame, the game is
+      # broken even though every test passed
+      - name: Render frames
+        run: cargo run -p wolf3d --bin frames -- --frames

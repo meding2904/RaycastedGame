@@ -1,0 +1,1281 @@
+use crate::prelude::*;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+#[cfg(not(target_arch = "wasm32"))]
+use rayon::{
+    iter::{IndexedParallelIterator, ParallelIterator},
+    slice::ParallelSliceMut,
+};
+
+pub struct Raycaster {
+    time: u128,
+    old_time: u128,
+
+    move_speed: f32,
+    rot_speed: f32,
+
+    pos: vec2,
+    dir: vec2,
+    plane: vec2,
+
+    anim_curr_time: u128,
+    anim_time: u128,
+    anim_counter: usize,
+}
+
+impl Raycaster {
+    pub fn new() -> Self {
+        Self {
+            pos: vec2::new(5.0, 5.0),
+            dir: vec2::new(-1.0, 0.0),
+            plane: vec2::new(0.0, 0.66),
+
+            time: 0,
+            old_time: 0,
+
+            move_speed: 0.0,
+            rot_speed: 0.0,
+
+            anim_curr_time: 0,
+            anim_time: 250,
+            anim_counter: 0,
+        }
+    }
+
+    #[cfg(feature = "single_threaded")]
+    pub fn render(
+        &mut self,
+        frame: &mut [u8],
+        rect: (usize, usize, usize, usize),
+        stride: usize,
+        world: &mut WorldMap,
+    ) {
+        self.render_st(frame, rect, stride, world);
+    }
+
+    #[cfg(not(feature = "single_threaded"))]
+    pub fn render(
+        &mut self,
+        frame: &mut [u8],
+        rect: (usize, usize, usize, usize),
+        stride: usize,
+        world: &mut WorldMap,
+    ) {
+        self.render_mt(frame, rect, stride, world);
+    }
+
+    /// Renders the world map into the frame inside the given rectangle
+    pub fn render_st(
+        &mut self,
+        frame: &mut [u8],
+        rect: (usize, usize, usize, usize),
+        stride: usize,
+        world: &mut WorldMap,
+    ) {
+        if self.anim_curr_time > self.anim_time {
+            self.anim_curr_time -= self.anim_time;
+            self.anim_counter = self.anim_counter.wrapping_add(1);
+            world.compute_lighting();
+        }
+
+        let width = rect.2 as i32;
+        let height = rect.3 as i32;
+
+        let pos = self.pos.clone();
+        let dir = self.dir.clone();
+        let plane = self.plane.clone();
+
+        let mut sprites = world.sprites.clone();
+
+        for sprite in &mut sprites {
+            sprite.distance =
+                (pos.x - sprite.x) * (pos.x - sprite.x) + (pos.y - sprite.y) * (pos.y - sprite.y);
+        }
+
+        sprites.sort_by(|a, b| b.distance.partial_cmp(&a.distance).unwrap());
+
+        //
+
+        let ceiling_tile = world.get_default_ceiling();
+        let mut ceiling_is_textured = false;
+
+        let floor_tile = world.get_default_floor();
+        let mut floor_is_textured = false;
+
+        // Background color if no ceiling or floor tile is set
+        if ceiling_tile.is_none() || floor_tile.is_none() {
+            for y in rect.1..rect.3 {
+                for x in rect.0..rect.2 {
+                    frame[(y * stride + x) * 4 + 0] = 0;
+                    frame[(y * stride + x) * 4 + 1] = 0;
+                    frame[(y * stride + x) * 4 + 2] = 0;
+                    frame[(y * stride + x) * 4 + 3] = 255;
+                }
+            }
+        }
+
+        if let Some(ceiling) = ceiling_tile {
+            if let Some(color) = ceiling.color {
+                for y in rect.1..rect.3 / 2 {
+                    for x in rect.0..rect.2 {
+                        let o = (y * stride + x) * 4;
+                        frame[o..o + 4].copy_from_slice(&color);
+                    }
+                }
+            } else {
+                ceiling_is_textured = true;
+            }
+        }
+
+        if let Some(floor) = floor_tile {
+            if let Some(color) = floor.color {
+                for y in rect.1 + rect.3 / 2..rect.1 + rect.3 {
+                    for x in rect.0..rect.2 {
+                        let o = (y * stride + x) * 4;
+                        frame[o..o + 4].copy_from_slice(&color);
+                    }
+                }
+            } else {
+                floor_is_textured = true;
+            }
+        }
+
+        if ceiling_is_textured || floor_is_textured {
+            for y in rect.1 + rect.3 / 2..rect.3 {
+                let ray_dir_x0 = dir.x - plane.x;
+                let ray_dir_y0 = dir.y - plane.y;
+                let ray_dir_x1 = dir.x + plane.x;
+                let ray_dir_y1 = dir.y + plane.y;
+
+                let p = y - rect.3 / 2;
+
+                let pos_z = 0.5 * rect.3 as f32;
+
+                // 0.5 is the eye height between floor and ceiling
+                let row_distance = pos_z / p as f32;
+
+                // world step vector per screen column
+                let floor_step_x = row_distance * (ray_dir_x1 - ray_dir_x0) / rect.2 as f32;
+                let floor_step_y = row_distance * (ray_dir_y1 - ray_dir_y0) / rect.2 as f32;
+
+                // world coordinates of the leftmost column
+                let mut floor_x = pos.x + row_distance * ray_dir_x0;
+                let mut floor_y = pos.y + row_distance * ray_dir_y0;
+
+                let mix_factor = row_distance / world.fog_distance;
+
+                for x in rect.0..rect.2 {
+                    let cell_x = floor_x.floor();
+                    let cell_y = floor_y.floor();
+
+                    if let Some(floor) = floor_tile {
+                        if let Some((image_id, rect)) = floor.texture {
+                            let tex_x = ((rect.2 as f32 * (floor_x - cell_x)) as usize)
+                                .clamp(0, rect.2 - 1);
+                            let tex_y = ((rect.3 as f32 * (floor_y - cell_y)) as usize)
+                                .clamp(0, rect.3 - 1);
+
+                            if let Some((tex_data, tex_width, _tex_height)) =
+                                world.get_image(image_id)
+                            {
+                                let tex_off = rect.0
+                                    + tex_x * 4
+                                    + rect.1
+                                    + ((tex_y as usize) * *tex_width as usize * 4);
+                                let off = x * 4 + y * 4 * stride;
+
+                                let mut floor_color: [u8; 4] = [0, 0, 0, 0];
+                                floor_color.copy_from_slice(&tex_data[tex_off..tex_off + 4]);
+                                let color = self.add_lighting(
+                                    &mut floor_color,
+                                    &world,
+                                    (floor_x as i32, floor_y as i32),
+                                    mix_factor,
+                                );
+                                frame[off..off + 4].copy_from_slice(&color);
+                            }
+                        }
+                    }
+
+                    if let Some(ceiling) = ceiling_tile {
+                        if let Some((image_id, tex_rect)) = ceiling.texture {
+                            let tex_x = ((tex_rect.2 as f32 * (floor_x - cell_x)) as usize)
+                                .clamp(0, tex_rect.2 - 1);
+                            let tex_y = ((tex_rect.3 as f32 * (floor_y - cell_y)) as usize)
+                                .clamp(0, tex_rect.3 - 1);
+
+                            if let Some((tex_data, tex_width, _tex_height)) =
+                                world.get_image(image_id)
+                            {
+                                let tex_off = tex_rect.0
+                                    + tex_x * 4
+                                    + tex_rect.1
+                                    + ((tex_y as usize) * *tex_width as usize * 4);
+                                let off = x * 4 + (rect.3 - y - 1) * 4 * stride;
+
+                                let mut ceiling_color: [u8; 4] = [0, 0, 0, 0];
+                                ceiling_color.copy_from_slice(&tex_data[tex_off..tex_off + 4]);
+                                let color = self.add_lighting(
+                                    &mut ceiling_color,
+                                    &world,
+                                    (floor_x as i32, floor_y as i32),
+                                    mix_factor,
+                                );
+                                frame[off..off + 4].copy_from_slice(&color);
+                            }
+                        }
+                    }
+
+                    floor_x += floor_step_x;
+                    floor_y += floor_step_y;
+                }
+            }
+        }
+
+        let mut z_buffer = vec![f32::MAX; rect.2 as usize];
+
+        for x in rect.0..rect.2 {
+            let camera_x = 2.0 * x as f32 / width as f32 - 1.0; //x-coordinate in camera space
+            let ray_dir_x = dir.x + plane.x * camera_x;
+            let ray_dir_y = dir.y + plane.y * camera_x;
+
+            let mut map_x = pos.x as i32;
+            let mut map_y = pos.y as i32;
+
+            let mut side_dist_x;
+            let mut side_dist_y;
+
+            let delta_dist_x = if ray_dir_x == 0.0 {
+                f32::MAX
+            } else {
+                (1.0 / ray_dir_x).abs()
+            };
+            let delta_dist_y = if ray_dir_y == 0.0 {
+                f32::MAX
+            } else {
+                (1.0 / ray_dir_y).abs()
+            };
+            let perp_wall_dist;
+
+            let step_x;
+            let step_y;
+
+            let mut hit = false; //was there a wall hit?
+            let mut side = 0; //was a NS or a EW wall hit?
+
+            if ray_dir_x < 0.0 {
+                step_x = -1;
+                side_dist_x = (pos.x - map_x as f32) * delta_dist_x;
+            } else {
+                step_x = 1;
+                side_dist_x = (map_x as f32 + 1.0 - pos.x) * delta_dist_x;
+            }
+
+            if ray_dir_y < 0.0 {
+                step_y = -1;
+                side_dist_y = (pos.y - map_y as f32) * delta_dist_y;
+            } else {
+                step_y = 1;
+                side_dist_y = (map_y as f32 + 1.0 - pos.y) * delta_dist_y;
+            }
+
+            for _ in 0..40 {
+                if side_dist_x < side_dist_y {
+                    side_dist_x += delta_dist_x;
+                    map_x += step_x;
+                    side = 0;
+                } else {
+                    side_dist_y += delta_dist_y;
+                    map_y += step_y;
+                    side = 1;
+                }
+
+                if let Some(tile) = world.get_wall(map_x, map_y) {
+                    // A doorway column the door panel has already slid past does not block
+                    // this ray, so the ray keeps travelling through the open door.
+                    if tile.door && tile.opening > 0.0 {
+                        let dist = if side == 0 {
+                            side_dist_x - delta_dist_x
+                        } else {
+                            side_dist_y - delta_dist_y
+                        };
+
+                        if wall_texture_column(tile, side, ray_dir_x, ray_dir_y, dist, &pos)
+                            .is_none()
+                        {
+                            continue;
+                        }
+                    }
+
+                    hit = true;
+                    break;
+                }
+            }
+
+            if hit {
+                // perpendicular distance: Euclidean distance would fisheye
+                if side == 0 {
+                    perp_wall_dist = side_dist_x - delta_dist_x;
+                } else {
+                    perp_wall_dist = side_dist_y - delta_dist_y;
+                }
+
+                let line_height = (height as f32 / perp_wall_dist) as i32;
+
+                let mut draw_start = -line_height / 2 + height / 2;
+                if draw_start < 0 {
+                    draw_start = 0;
+                }
+
+                let mut draw_end = line_height / 2 + height / 2;
+                if draw_end >= height {
+                    draw_end = height - 1;
+                }
+
+                let mix_factor = perp_wall_dist / world.fog_distance;
+
+                if let Some(tile) = world.get_wall(map_x, map_y) {
+                    if let Some((image_id, rect)) = self.get_texture(&tile) {
+                        let mut wall_x; //where exactly the wall was hit
+                        if side == 0 {
+                            wall_x = pos.y + perp_wall_dist * ray_dir_y;
+                        } else {
+                            wall_x = pos.x + perp_wall_dist * ray_dir_x;
+                        }
+                        wall_x -= wall_x.floor();
+
+                        let mut tex_x =
+                            ((wall_x * rect.2 as f32) as usize).min(rect.2.saturating_sub(1));
+                        if side == 0 && ray_dir_x > 0.0 {
+                            tex_x = rect.2 - tex_x - 1;
+                        }
+                        if side == 1 && ray_dir_y < 0.0 {
+                            tex_x = rect.2 - tex_x - 1;
+                        }
+                        if tile.door {
+                            // slide the panel sideways as the door opens
+                            let slide = (tile.opening.clamp(0.0, 1.0) * rect.2 as f32) as usize;
+                            tex_x = tex_x.saturating_sub(slide);
+                        }
+
+                        // texture step per screen pixel
+                        let step = 1.0 * rect.3 as f32 / line_height as f32;
+
+                        let mut tex_pos = (draw_start - height / 2 + line_height / 2) as f32 * step;
+
+                        if let Some((tex_data, tex_width, _tex_height)) = world.get_image(image_id)
+                        {
+                            let off_x = x * 4;
+                            for y in draw_start..draw_end {
+                                let tex_off = rect.0
+                                    + tex_x * 4
+                                    + rect.1
+                                    + ((tex_pos as usize).min(rect.3.saturating_sub(1))
+                                        * *tex_width as usize
+                                        * 4);
+                                let off = off_x + y as usize * 4 * stride;
+
+                                let mut wall_color: [u8; 4] = [0, 0, 0, 0];
+                                wall_color.copy_from_slice(&tex_data[tex_off..tex_off + 4]);
+                                let color = self.add_lighting(
+                                    &mut wall_color,
+                                    &world,
+                                    (map_x, map_y),
+                                    mix_factor,
+                                );
+                                frame[off..off + 4].copy_from_slice(&color);
+
+                                tex_pos += step;
+                            }
+                        }
+                    }
+                }
+
+                // z-buffer keeps the perpendicular distance for sprite clipping
+                z_buffer[x] = perp_wall_dist;
+
+                /* color
+                let off_x = x * 4;
+
+                for y in draw_start..draw_end {
+                    let off = off_x + y as usize * 4 * self.width;
+                    frame[off] = 255;
+                    frame[off + 1] = 255;
+                    frame[off + 2] = 255;
+                    frame[off + 3] = 255;
+                }
+                */
+            }
+        }
+
+        for sprite in &sprites {
+            let sprite_x = sprite.x - pos.x;
+            let sprite_y = sprite.y - pos.y;
+
+            // inverse camera matrix
+
+            let inv_det = 1.0 / (plane.x * dir.y - dir.x * plane.y); //required for correct matrix multiplication
+
+            let transform_x = inv_det * (dir.y * sprite_x - dir.x * sprite_y);
+            let transform_y = inv_det * (-plane.y * sprite_x + plane.x * sprite_y); //this is actually the depth inside the screen, that what Z is in 3D
+
+            // on or behind the camera plane divides by zero
+            if transform_y <= 0.0 {
+                continue;
+            }
+
+            let v_move_screen = (sprite.move_y / transform_y) as i32;
+
+            let mix_factor = transform_y / world.fog_distance;
+
+            let sprite_screen_x = ((width as f32 / 2.0) * (1.0 + transform_x / transform_y)) as i32;
+
+            let shrink = sprite.shrink.max(1);
+            let sprite_height = ((height as f32 / (transform_y)) as i32).abs() / shrink; //using 'transformY' instead of the real distance prevents fisheye
+            let mut draw_start_y = -sprite_height / 2 + height / 2 + v_move_screen;
+            if draw_start_y < 0 {
+                draw_start_y = 0;
+            }
+            let mut draw_end_y = sprite_height / 2 + height / 2 + v_move_screen;
+            if draw_end_y >= height {
+                draw_end_y = height - 1;
+            }
+            if draw_end_y < 0 {
+                draw_end_y = 0;
+            }
+
+            let sprite_width = ((height as f32 / (transform_y)) as i32).abs() / shrink;
+
+            // A degenerate sprite would divide by zero below, skip it
+            if sprite_height == 0 || sprite_width == 0 {
+                continue;
+            }
+            let mut draw_start_x = -sprite_width / 2 + sprite_screen_x;
+            if draw_start_x < 0 {
+                draw_start_x = 0;
+            }
+            let mut draw_end_x = sprite_width / 2 + sprite_screen_x;
+            if draw_end_x >= width {
+                draw_end_x = width - 1;
+            }
+
+            if let Some((image_id, tex_rect)) = self.get_texture(&sprite.tile) {
+                if let Some((tex_data, tex_width, _tex_height)) = world.get_image(image_id) {
+                    for stripe in draw_start_x..draw_end_x {
+                        let tex_x = ((256
+                            * (stripe - (-sprite_width / 2 + sprite_screen_x))
+                            * tex_rect.2 as i32
+                            / sprite_width)
+                            / 256) as usize;
+
+                        if transform_y > 0.0
+                            && stripe > 0
+                            && stripe < width
+                            && transform_y < z_buffer[stripe as usize]
+                        {
+                            for y in draw_start_y as usize..draw_end_y as usize {
+                                let d = (y as isize - v_move_screen as isize) * 256
+                                    - height as isize * 128
+                                    + sprite_height as isize * 128; //256 and 128 factors to avoid floats
+                                let tex_y = (((d * tex_rect.3 as isize) / sprite_height as isize)
+                                    / 256)
+                                    .clamp(0, (tex_rect.3 as isize - 1).max(0))
+                                    as usize;
+
+                                let tex_off = tex_rect.0
+                                    + tex_x * 4
+                                    + tex_rect.1
+                                    + ((tex_y as usize) * *tex_width as usize * 4);
+                                let off = (rect.0 + stripe as usize) * 4
+                                    + (rect.1 + y as usize) * 4 * stride;
+
+                                let mut sprite_color: [u8; 4] = [0, 0, 0, 0];
+                                sprite_color.copy_from_slice(&tex_data[tex_off..tex_off + 4]);
+                                let tex_alpha = tex_data[tex_off + 3] as f32 / 255.0;
+                                if tex_alpha > 0.0 {
+                                    let color = self.add_lighting(
+                                        &mut sprite_color,
+                                        &world,
+                                        (sprite.x as i32, sprite.y as i32),
+                                        mix_factor,
+                                    );
+                                    frame[off..off + 4].copy_from_slice(&color);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        self.old_time = self.time;
+        self.time = self.get_time();
+
+        if self.old_time > 0 {
+            self.anim_curr_time += self.time - self.old_time;
+        }
+
+        let frame_time = (self.time - self.old_time) as f32 / 1000.0;
+
+        self.move_speed = frame_time * 5.0; //the constant value is in squares/second
+        self.rot_speed = frame_time * 2.0;
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    /// Renders the world map into the frame inside the given rectangle
+    pub fn render_mt(
+        &mut self,
+        frame: &mut [u8],
+        in_rect: (usize, usize, usize, usize),
+        in_stride: usize,
+        world: &mut WorldMap,
+    ) {
+        let rect = (0, 0, in_rect.2, in_rect.3);
+        let stride = rect.3;
+
+        if self.anim_curr_time > self.anim_time {
+            self.anim_curr_time -= self.anim_time;
+            self.anim_counter = self.anim_counter.wrapping_add(1);
+            world.compute_lighting();
+        }
+
+        let width = rect.2 as i32;
+        let height = rect.3 as i32;
+
+        let pos = self.pos.clone();
+        let dir = self.dir.clone();
+        let plane = self.plane.clone();
+
+        let mut buffer = vec![0; rect.2 * rect.3 * 4];
+
+        let mut sprites = world.sprites.clone();
+
+        for sprite in &mut sprites {
+            sprite.distance =
+                (pos.x - sprite.x) * (pos.x - sprite.x) + (pos.y - sprite.y) * (pos.y - sprite.y);
+        }
+
+        sprites.sort_by(|a, b| b.distance.partial_cmp(&a.distance).unwrap());
+
+        buffer
+            .par_rchunks_exact_mut(height as usize * 4)
+            .enumerate()
+            .for_each(|(x, line)| {
+                let ceiling_tile = world.get_default_ceiling();
+                let floor_tile = world.get_default_floor();
+
+                let mut z_buffer = f32::MAX;
+
+                if let Some(ceiling) = ceiling_tile {
+                    if let Some(color) = ceiling.color {
+                        for y in 0..rect.3 / 2 {
+                            let o = y * 4;
+                            line[o..o + 4].copy_from_slice(&color);
+                        }
+                    }
+                }
+
+                if let Some(floor) = floor_tile {
+                    if let Some(color) = floor.color {
+                        for y in rect.3 / 2..rect.3 {
+                            let o = y * 4;
+                            line[o..o + 4].copy_from_slice(&color);
+                        }
+                    }
+                }
+
+                for y in rect.3 / 2..rect.3 {
+                    let ray_dir_x0 = dir.x - plane.x;
+                    let ray_dir_y0 = dir.y - plane.y;
+                    let ray_dir_x1 = dir.x + plane.x;
+                    let ray_dir_y1 = dir.y + plane.y;
+
+                    let p = y - rect.3 / 2;
+
+                    let pos_z = 0.5 * rect.3 as f32;
+
+                    // 0.5 is the eye height between floor and ceiling
+                    let row_distance = pos_z / p as f32;
+
+                    // world step vector per screen column
+                    let floor_step_x = row_distance * (ray_dir_x1 - ray_dir_x0) / rect.2 as f32;
+                    let floor_step_y = row_distance * (ray_dir_y1 - ray_dir_y0) / rect.2 as f32;
+
+                    // world coordinates of the leftmost column
+                    let mut floor_x = pos.x + row_distance * ray_dir_x0;
+                    let mut floor_y = pos.y + row_distance * ray_dir_y0;
+
+                    floor_x += floor_step_x * x as f32;
+                    floor_y += floor_step_y * x as f32;
+
+                    let mix_factor = row_distance / world.fog_distance;
+
+                    let cell_x = floor_x.floor();
+                    let cell_y = floor_y.floor();
+
+                    let map_x = cell_x as i32;
+                    let map_y = cell_y as i32;
+
+                    let mut floor = world.get_floor(map_x, map_y);
+                    if floor.is_none() {
+                        floor = floor_tile;
+                    }
+
+                    if let Some(floor) = floor {
+                        if let Some((image_id, rect)) = floor.texture {
+                            let tex_x = ((rect.2 as f32 * (floor_x - cell_x)) as usize)
+                                .clamp(0, rect.2 - 1);
+                            let tex_y = ((rect.3 as f32 * (floor_y - cell_y)) as usize)
+                                .clamp(0, rect.3 - 1);
+
+                            if let Some((tex_data, tex_width, _tex_height)) =
+                                world.get_image(image_id)
+                            {
+                                let tex_off = rect.0
+                                    + tex_x * 4
+                                    + rect.1
+                                    + ((rect.3 - tex_y as usize - 1) * *tex_width as usize * 4);
+                                let off = y * 4;
+
+                                let mut floor_color: [u8; 4] = [0, 0, 0, 0];
+                                floor_color.copy_from_slice(&tex_data[tex_off..tex_off + 4]);
+                                let color = self.add_lighting(
+                                    &mut floor_color,
+                                    &world,
+                                    (floor_x as i32, floor_y as i32),
+                                    mix_factor,
+                                );
+
+                                line[off..off + 4].copy_from_slice(&color);
+                            }
+                        }
+                    }
+
+                    if let Some(ceiling) = ceiling_tile {
+                        if let Some((image_id, tex_rect)) = ceiling.texture {
+                            let tex_x = ((tex_rect.2 as f32 * (floor_x - cell_x)) as usize)
+                                .clamp(0, tex_rect.2 - 1);
+                            let tex_y = ((tex_rect.3 as f32 * (floor_y - cell_y)) as usize)
+                                .clamp(0, tex_rect.3 - 1);
+
+                            if let Some((tex_data, tex_width, _tex_height)) =
+                                world.get_image(image_id)
+                            {
+                                let tex_off = tex_rect.0
+                                    + tex_x * 4
+                                    + tex_rect.1
+                                    + ((tex_y as usize) * *tex_width as usize * 4);
+                                let off = (rect.3 - y - 1) * 4;
+
+                                let mut ceiling_color: [u8; 4] = [0, 0, 0, 0];
+                                ceiling_color.copy_from_slice(&tex_data[tex_off..tex_off + 4]);
+                                let color = self.add_lighting(
+                                    &mut ceiling_color,
+                                    &world,
+                                    (floor_x as i32, floor_y as i32),
+                                    mix_factor,
+                                );
+                                line[off..off + 4].copy_from_slice(&color);
+                            }
+                        }
+                    }
+                }
+
+                let camera_x = 2.0 * x as f32 / width as f32 - 1.0; //x-coordinate in camera space
+                let ray_dir_x = dir.x + plane.x * camera_x;
+                let ray_dir_y = dir.y + plane.y * camera_x;
+
+                let mut map_x = pos.x as i32;
+                let mut map_y = pos.y as i32;
+
+                let mut side_dist_x;
+                let mut side_dist_y;
+
+                let delta_dist_x = if ray_dir_x == 0.0 {
+                    f32::MAX
+                } else {
+                    (1.0 / ray_dir_x).abs()
+                };
+                let delta_dist_y = if ray_dir_y == 0.0 {
+                    f32::MAX
+                } else {
+                    (1.0 / ray_dir_y).abs()
+                };
+                let perp_wall_dist;
+
+                let step_x;
+                let step_y;
+
+                let mut hit = false; //was there a wall hit?
+                let mut side = 0; //was a NS or a EW wall hit?
+
+                if ray_dir_x < 0.0 {
+                    step_x = -1;
+                    side_dist_x = (pos.x - map_x as f32) * delta_dist_x;
+                } else {
+                    step_x = 1;
+                    side_dist_x = (map_x as f32 + 1.0 - pos.x) * delta_dist_x;
+                }
+
+                if ray_dir_y < 0.0 {
+                    step_y = -1;
+                    side_dist_y = (pos.y - map_y as f32) * delta_dist_y;
+                } else {
+                    step_y = 1;
+                    side_dist_y = (map_y as f32 + 1.0 - pos.y) * delta_dist_y;
+                }
+
+                for _ in 0..40 {
+                    if side_dist_x < side_dist_y {
+                        side_dist_x += delta_dist_x;
+                        map_x += step_x;
+                        side = 0;
+                    } else {
+                        side_dist_y += delta_dist_y;
+                        map_y += step_y;
+                        side = 1;
+                    }
+
+                    if let Some(tile) = world.get_wall(map_x, map_y) {
+                        // A doorway column the door panel has already slid past does not block
+                        // this ray, so the ray keeps travelling through the open door.
+                        if tile.door && tile.opening > 0.0 {
+                            let dist = if side == 0 {
+                                side_dist_x - delta_dist_x
+                            } else {
+                                side_dist_y - delta_dist_y
+                            };
+
+                            if wall_texture_column(tile, side, ray_dir_x, ray_dir_y, dist, &pos)
+                                .is_none()
+                            {
+                                continue;
+                            }
+                        }
+
+                        hit = true;
+                        break;
+                    }
+                }
+
+                if hit {
+                    // perpendicular distance: Euclidean distance would fisheye
+                    if side == 0 {
+                        perp_wall_dist = side_dist_x - delta_dist_x;
+                    } else {
+                        perp_wall_dist = side_dist_y - delta_dist_y;
+                    }
+
+                    let line_height = (height as f32 / perp_wall_dist) as i32;
+
+                    let mut draw_start = -line_height / 2 + height / 2;
+                    if draw_start < 0 {
+                        draw_start = 0;
+                    }
+
+                    let mut draw_end = line_height / 2 + height / 2;
+                    if draw_end >= height {
+                        draw_end = height - 1;
+                    }
+
+                    let mix_factor = perp_wall_dist / world.fog_distance;
+
+                    if let Some(tile) = world.get_wall(map_x, map_y) {
+                        if let Some((image_id, rect)) = self.get_texture(&tile) {
+                            let mut wall_x; //where exactly the wall was hit
+                            if side == 0 {
+                                wall_x = pos.y + perp_wall_dist * ray_dir_y;
+                            } else {
+                                wall_x = pos.x + perp_wall_dist * ray_dir_x;
+                            }
+                            wall_x -= wall_x.floor();
+
+                            let mut tex_x =
+                                ((wall_x * rect.2 as f32) as usize).min(rect.2.saturating_sub(1));
+                            if side == 0 && ray_dir_x > 0.0 {
+                                tex_x = rect.2 - tex_x - 1;
+                            }
+                            if side == 1 && ray_dir_y < 0.0 {
+                                tex_x = rect.2 - tex_x - 1;
+                            }
+                            if tile.door {
+                                // slide the panel sideways as the door opens
+                                let slide = (tile.opening.clamp(0.0, 1.0) * rect.2 as f32) as usize;
+                                tex_x = tex_x.saturating_sub(slide);
+                            }
+
+                            // texture step per screen pixel
+                            let step = 1.0 * rect.3 as f32 / line_height as f32;
+
+                            let mut tex_pos =
+                                (draw_start - height / 2 + line_height / 2) as f32 * step;
+
+                            if let Some((tex_data, tex_width, _tex_height)) =
+                                world.get_image(image_id)
+                            {
+                                for y in draw_start..draw_end {
+                                    let tex_off = rect.0
+                                        + tex_x * 4
+                                        + rect.1
+                                        + ((tex_pos as usize).min(rect.3.saturating_sub(1))
+                                            * *tex_width as usize
+                                            * 4);
+                                    let off = y as usize * 4;
+
+                                    let mut wall_color: [u8; 4] = [0, 0, 0, 0];
+                                    wall_color.copy_from_slice(&tex_data[tex_off..tex_off + 4]);
+                                    let color = self.add_lighting(
+                                        &mut wall_color,
+                                        &world,
+                                        (map_x, map_y),
+                                        mix_factor,
+                                    );
+                                    line[off..off + 4].copy_from_slice(&color);
+
+                                    tex_pos += step;
+                                }
+                            }
+                        }
+                    }
+
+                    // z-buffer keeps the perpendicular distance for sprite clipping
+                    z_buffer = perp_wall_dist;
+
+                    /* color
+                    let off_x = x * 4;
+
+                    for y in draw_start..draw_end {
+                        let off = off_x + y as usize * 4 * self.width;
+                        frame[off] = 255;
+                        frame[off + 1] = 255;
+                        frame[off + 2] = 255;
+                        frame[off + 3] = 255;
+                    }
+                    */
+                }
+
+                for sprite in &sprites {
+                    let sprite_x = sprite.x - pos.x;
+                    let sprite_y = sprite.y - pos.y;
+
+                    // inverse camera matrix
+
+                    let inv_det = 1.0 / (plane.x * dir.y - dir.x * plane.y); //required for correct matrix multiplication
+
+                    let transform_x = inv_det * (dir.y * sprite_x - dir.x * sprite_y);
+                    let transform_y = inv_det * (-plane.y * sprite_x + plane.x * sprite_y); //this is actually the depth inside the screen, that what Z is in 3D
+
+                    // on or behind the camera plane divides by zero
+                    if transform_y <= 0.0 {
+                        continue;
+                    }
+
+                    let v_move_screen = (sprite.move_y / transform_y) as i32;
+
+                    let mix_factor = transform_y / world.fog_distance;
+
+                    let sprite_screen_x =
+                        ((width as f32 / 2.0) * (1.0 + transform_x / transform_y)) as i32;
+
+                    let sprite_height =
+                        ((height as f32 / (transform_y)) as i32).abs() / sprite.shrink; //using 'transformY' instead of the real distance prevents fisheye
+                    let mut draw_start_y = -sprite_height / 2 + height / 2 + v_move_screen;
+                    if draw_start_y < 0 {
+                        draw_start_y = 0;
+                    }
+                    let mut draw_end_y = sprite_height / 2 + height / 2 + v_move_screen;
+                    if draw_end_y >= height {
+                        draw_end_y = height - 1;
+                    }
+
+                    let sprite_width =
+                        ((height as f32 / (transform_y)) as i32).abs() / sprite.shrink;
+
+                    // guards the texture maths below from i32 overflow on a point blank sprite
+                    if sprite_width <= 0 || sprite_height <= 0 {
+                        continue;
+                    }
+
+                    let mut draw_start_x = -sprite_width / 2 + sprite_screen_x;
+                    if draw_start_x < 0 {
+                        draw_start_x = 0;
+                    }
+                    let mut draw_end_x = sprite_width / 2 + sprite_screen_x;
+                    if draw_end_x >= width {
+                        draw_end_x = width - 1;
+                    }
+
+                    if let Some((image_id, tex_rect)) = self.get_texture(&sprite.tile) {
+                        if let Some((tex_data, tex_width, _tex_height)) = world.get_image(image_id)
+                        {
+                            let stripe = x as i32;
+                            if stripe >= draw_start_x && stripe < draw_end_x {
+                                // i64: point blank products overflow i32
+                                let tex_x = ((256i64
+                                    * (stripe as i64
+                                        - (-(sprite_width as i64) / 2 + sprite_screen_x as i64))
+                                    * tex_rect.2 as i64
+                                    / sprite_width as i64)
+                                    / 256)
+                                    .clamp(0, tex_rect.2.max(1) as i64 - 1)
+                                    as usize;
+
+                                if transform_y > 0.0
+                                    && stripe > 0
+                                    && stripe < width
+                                    && transform_y < z_buffer
+                                {
+                                    for y in draw_start_y as usize..draw_end_y as usize {
+                                        let d = (y as isize - v_move_screen as isize) * 256
+                                            - height as isize * 128
+                                            + sprite_height as isize * 128; //256 and 128 factors to avoid floats
+                                        let tex_y = (((d * tex_rect.3 as isize)
+                                            / sprite_height as isize)
+                                            / 256)
+                                            .clamp(0, (tex_rect.3 as isize - 1).max(0))
+                                            as usize;
+
+                                        let tex_off = tex_rect.0
+                                            + tex_x * 4
+                                            + tex_rect.1
+                                            + ((tex_y as usize) * *tex_width as usize * 4);
+                                        let off = y * 4;
+
+                                        let mut sprite_color: [u8; 4] = [0, 0, 0, 0];
+                                        sprite_color
+                                            .copy_from_slice(&tex_data[tex_off..tex_off + 4]);
+                                        let tex_alpha = tex_data[tex_off + 3] as f32 / 255.0;
+                                        if tex_alpha > 0.0 {
+                                            let color = self.add_lighting(
+                                                &mut sprite_color,
+                                                &world,
+                                                (sprite.x as i32, sprite.y as i32),
+                                                mix_factor * tex_alpha,
+                                            );
+                                            line[off..off + 4].copy_from_slice(&color);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+
+        let hh = frame.len() / (in_stride as usize * 4);
+
+        // copy the buffer into the frame, rotated 90 degrees
+        frame
+            .par_rchunks_exact_mut(in_stride as usize * 4)
+            .enumerate()
+            .for_each(|(dy, line)| {
+                let y = hh - dy;
+                if y >= in_rect.1 && y < in_rect.1 + in_rect.3 {
+                    let ry = y - in_rect.1;
+                    for x in 0..rect.2 {
+                        let off = (in_rect.0 + x) * 4;
+                        let buffer_off = ry * 4 + (rect.2 - x - 1) * 4 * stride;
+                        line[off..off + 4].copy_from_slice(&buffer[buffer_off..buffer_off + 4]);
+                    }
+                }
+            });
+
+        self.old_time = self.time;
+        self.time = self.get_time();
+
+        if self.old_time > 0 {
+            self.anim_curr_time += self.time - self.old_time;
+        }
+
+        let frame_time = (self.time - self.old_time) as f32 / 1000.0;
+
+        self.move_speed = frame_time * 5.0; //the constant value is in squares/second
+        self.rot_speed = frame_time * 2.0;
+    }
+
+    /// Moves the camera by the given delta, sliding along walls instead of stopping dead
+    pub fn move_by(&mut self, world: &WorldMap, dx: f32, dy: f32) {
+        if world.is_blocking((self.pos.x + dx) as i32, self.pos.y as i32) == false {
+            self.pos.x += dx;
+        }
+
+        if world.is_blocking(self.pos.x as i32, (self.pos.y + dy) as i32) == false {
+            self.pos.y += dy;
+        }
+    }
+
+    /// Go forward
+    pub fn go_forward(&mut self, world: &WorldMap) {
+        let (dx, dy) = (self.dir.x * self.move_speed, self.dir.y * self.move_speed);
+        self.move_by(world, dx, dy);
+    }
+
+    /// Go backward
+    pub fn go_backward(&mut self, world: &WorldMap) {
+        let (dx, dy) = (-self.dir.x * self.move_speed, -self.dir.y * self.move_speed);
+        self.move_by(world, dx, dy);
+    }
+
+    /// Strafe to the left, the camera keeps its heading
+    pub fn strafe_left(&mut self, world: &WorldMap) {
+        // The camera plane is 0.66 units long, normalize it back to one unit
+        let (dx, dy) = (
+            self.plane.x / 0.66 * self.move_speed,
+            self.plane.y / 0.66 * self.move_speed,
+        );
+        self.move_by(world, dx, dy);
+    }
+
+    /// Strafe to the right, the camera keeps its heading
+    pub fn strafe_right(&mut self, world: &WorldMap) {
+        let (dx, dy) = (
+            -self.plane.x / 0.66 * self.move_speed,
+            -self.plane.y / 0.66 * self.move_speed,
+        );
+        self.move_by(world, dx, dy);
+    }
+
+    /// Turn left
+    pub fn turn_left(&mut self) {
+        let old_dir_x = self.dir.x;
+        self.dir.x = self.dir.x * self.rot_speed.cos() - self.dir.y * self.rot_speed.sin();
+        self.dir.y = old_dir_x * self.rot_speed.sin() + self.dir.y * self.rot_speed.cos();
+
+        let old_plane_x = self.plane.x;
+        self.plane.x = self.plane.x * self.rot_speed.cos() - self.plane.y * self.rot_speed.sin();
+        self.plane.y = old_plane_x * self.rot_speed.sin() + self.plane.y * self.rot_speed.cos();
+    }
+
+    /// Turn right
+    pub fn turn_right(&mut self) {
+        let old_dir_x = self.dir.x;
+        self.dir.x = self.dir.x * (-self.rot_speed).cos() - self.dir.y * (-self.rot_speed).sin();
+        self.dir.y = old_dir_x * (-self.rot_speed).sin() + self.dir.y * (-self.rot_speed).cos();
+
+        let old_plane_x = self.plane.x;
+        self.plane.x =
+            self.plane.x * (-self.rot_speed).cos() - self.plane.y * (-self.rot_speed).sin();
+        self.plane.y =
+            old_plane_x * (-self.rot_speed).sin() + self.plane.y * (-self.rot_speed).cos();
+    }
+
+    /// Turn by an angle in degrees
+    pub fn turn_by(&mut self, angle: f32) {
+        let angle = angle * std::f32::consts::PI / 180.0;
+
+        let old_dir_x = self.dir.x;
+        self.dir.x = self.dir.x * angle.cos() - self.dir.y * angle.sin();
+        self.dir.y = old_dir_x * angle.sin() + self.dir.y * angle.cos();
+
+        let old_plane_x = self.plane.x;
+        self.plane.x = self.plane.x * angle.cos() - self.plane.y * angle.sin();
+        self.plane.y = old_plane_x * angle.sin() + self.plane.y * angle.cos();
+    }
+
+    /// Face north
+    pub fn face_north(&mut self) {
+        self.dir.x = -1.0;
+        self.dir.y = -0.0;
+
+        self.plane.x = 0.0;
+        self.plane.y = 0.66;
+
+        let old_dir_x = self.dir.x;
+
+        let angle = 90.0 * std::f32::consts::PI / 180.0;
+
+        self.dir.x = self.dir.x * (-angle).cos() - self.dir.y * (-angle).sin();
+        self.dir.y = old_dir_x * (-angle).sin() + self.dir.y * (-angle).cos();
+
+        let old_plane_x = self.plane.x;
+        self.plane.x = self.plane.x * (-angle).cos() - self.plane.y * (-angle).sin();
+        self.plane.y = old_plane_x * (-angle).sin() + self.plane.y * (-angle).cos();
+    }
+
+    /// Face east
+    pub fn face_east(&mut self) {
+        self.dir.x = -1.0;
+        self.dir.y = -0.0;
+
+        self.plane.x = 0.0;
+        self.plane.y = 0.66;
+
+        let old_dir_x = self.dir.x;
+
+        let angle = 2.0 * 90.0 * std::f32::consts::PI / 180.0;
+
+        self.dir.x = self.dir.x * (-angle).cos() - self.dir.y * (-angle).sin();
+        self.dir.y = old_dir_x * (-angle).sin() + self.dir.y * (-angle).cos();
+
+        let old_plane_x = self.plane.x;
+        self.plane.x = self.plane.x * (-angle).cos() - self.plane.y * (-angle).sin();
+        self.plane.y = old_plane_x * (-angle).sin() + self.plane.y * (-angle).cos();
+    }
+
+    /// Face south
+    pub fn face_south(&mut self) {
+        self.dir.x = -1.0;
+        self.dir.y = -0.0;
+
+        self.plane.x = 0.0;
+        self.plane.y = 0.66;
+
+        let old_dir_x = self.dir.x;
+
+        let angle = 3.0 * 90.0 * std::f32::consts::PI / 180.0;
+
+        self.dir.x = self.dir.x * (-angle).cos() - self.dir.y * (-angle).sin();
+        self.dir.y = old_dir_x * (-angle).sin() + self.dir.y * (-angle).cos();
+
+        let old_plane_x = self.plane.x;
+        self.plane.x = self.plane.x * (-angle).cos() - self.plane.y * (-angle).sin();
+        self.plane.y = old_plane_x * (-angle).sin() + self.plane.y * (-angle).cos();
+    }
+
+    /// Face west
+    pub fn face_west(&mut self) {
+        self.dir.x = -1.0;
+        self.dir.y = -0.0;
+
+        self.plane.x = 0.0;
+        self.plane.y = 0.66;
+    }
+
+    /// Set the position
+    pub fn set_pos(&mut self, x: f32, y: f32) {
+        self.pos.x = x;
+        self.pos.y = y;
+    }
+
+    /// The current position of the camera
+    pub fn pos(&self) -> (f32, f32) {
+        (self.pos.x, self.pos.y)
+    }
+
+    /// The current direction vector of the camera
+    pub fn dir(&self) -> (f32, f32) {
+        (self.dir.x, self.dir.y)
+    }
+
+    /// The current heading of the camera in radians, measured like `atan2(dir.y, dir.x)`
+    pub fn angle(&self) -> f32 {
+        self.dir.y.atan2(self.dir.x)
+    }
+
+    /// Sets the absolute heading and keeps the camera plane perpendicular
+    pub fn set_dir_angle(&mut self, angle: f32) {
+        self.dir.x = angle.cos();
+        self.dir.y = angle.sin();
+
+        // The camera plane must stay perpendicular to the direction and 0.66 units long,
+        // which is the horizontal field of view of the original games.
+        self.plane.x = self.dir.y * 0.66;
+        self.plane.y = -self.dir.x * 0.66;
+    }
+
+    /// Sets the movement speed in map units the next move call will use
+    pub fn set_move_speed(&mut self, speed: f32) {
+        self.move_speed = speed;
+    }
+
+    /// Set the animation time in ms
+    pub fn set_anim_time(&mut self, time: u16) {
+        self.anim_time = time as u128;
+    }
+
+    /// Gets the current time in milliseconds
+    fn get_time(&self) -> u128 {
+        let stop = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("Time went backwards");
+        stop.as_millis()
+    }
+
+    #[inline(always)]
+    /// Mix two colors
+    fn mix_color(&self, a: &[u8; 4], b: &[u8; 4], v: f32) -> [u8; 4] {
+        [
+            (((1.0 - v) * (a[0] as f32 / 255.0) + b[0] as f32 / 255.0 * v) * 255.0) as u8,
+            (((1.0 - v) * (a[1] as f32 / 255.0) + b[1] as f32 / 255.0 * v) * 255.0) as u8,
+            (((1.0 - v) * (a[2] as f32 / 255.0) + b[2] as f32 / 255.0 * v) * 255.0) as u8,
+            255,
+        ]
+    }
+
+    #[inline(always)]
+    /// Returns the tile rect for a given texture, handles animation
+    fn get_texture(&self, tile: &Tile) -> Option<(usize, (usize, usize, usize, usize))> {
+        if let Some((image_id, rect)) = tile.texture {
+            if tile.frames == 1 {
+                return Some((image_id, rect));
+            } else {
+                let frame = self.anim_counter % tile.frames as usize;
+                let x = rect.0 + (rect.2 * frame as usize * 4);
+                let y = rect.1;
+                return Some((image_id, (x, y, rect.2, rect.3)));
+            }
+        }
+        None
+    }
+
+    #[inline(always)]
+    /// Adds the lighting to the pixel color
+    pub fn add_lighting(
+        &self,
+        color: &[u8; 4],
+        world: &WorldMap,
+        pos: (i32, i32),
+        mix_factor: f32,
+    ) -> [u8; 4] {
+        if let Some(l) = world.light_map.get(&pos) {
+            let factor = ((1.0 - l) - mix_factor).clamp(0.0, 1.0);
+
+            let mut cr = color[0] as f32;
+            cr -= cr * factor;
+            let mut cg = color[1] as f32;
+            cg -= cg * factor;
+            let mut cb = color[2] as f32;
+            cb -= cb * factor;
+
+            return [cr as u8, cg as u8, cb as u8, 255];
+        } else {
+            return self.mix_color(&color, &world.fog_color, mix_factor);
+        }
+    }
+}
+
+/// The texture column of a wall tile a ray hits, or `None` if the ray passes through
+fn wall_texture_column(
+    tile: &Tile,
+    side: i32,
+    ray_dir_x: f32,
+    ray_dir_y: f32,
+    dist: f32,
+    pos: &vec2,
+) -> Option<usize> {
+    let (_, rect) = tile.texture?;
+
+    let mut wall_x = if side == 0 {
+        pos.y + dist * ray_dir_y
+    } else {
+        pos.x + dist * ray_dir_x
+    };
+    wall_x -= wall_x.floor();
+
+    let mut tex_x = ((wall_x * rect.2 as f32) as usize).min(rect.2.saturating_sub(1));
+    if side == 0 && ray_dir_x > 0.0 {
+        tex_x = rect.2 - tex_x - 1;
+    }
+    if side == 1 && ray_dir_y < 0.0 {
+        tex_x = rect.2 - tex_x - 1;
+    }
+
+    if tile.door {
+        let slide = (tile.opening.clamp(0.0, 1.0) * rect.2 as f32) as usize;
+        if tex_x < slide {
+            return None;
+        }
+    }
+
+    Some(tex_x)
+}

@@ -1,0 +1,20 @@
+[package]
+name = "wolf3d"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "A feature-complete Wolfenstein 3D clone rendered with the markusmoenig/raycaster engine"
+
+[dependencies]
+png = "0.18.1"
+rand = "0.9.5"
+raycaster = { path = "../raycaster" }
+rodio = "0.21.1"
+softbuffer = "0.4.8"
+winit = "0.30.13"
+
+[lints.clippy]
+# The procedural art helpers take a canvas, an RNG, a palette and a handful of shape parameters.
+# Grouping those into structs would bury the recipe, which is the whole point of those files.
+too_many_arguments = "allow"
