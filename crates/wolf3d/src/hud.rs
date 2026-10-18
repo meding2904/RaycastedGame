@@ -14,8 +14,8 @@ const BAR_BROWN: [u8; 4] = [104, 82, 58, 255];
 const BAR_DARK: [u8; 4] = [54, 42, 30, 255];
 const BAR_LIGHT: [u8; 4] = [140, 114, 82, 255];
 /// Where the difficulty list starts and how far apart its rows are
-const SELECTOR_TOP: i32 = 112;
-const SELECTOR_ROW: i32 = 18;
+const SELECTOR_TOP: i32 = 118;
+const SELECTOR_ROW: i32 = 17;
 
 const LABEL: [u8; 4] = [196, 176, 140, 255];
 const VALUE: [u8; 4] = [236, 232, 220, 255];
