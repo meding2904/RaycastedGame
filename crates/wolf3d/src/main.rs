@@ -10,7 +10,7 @@ use winit::dpi::LogicalSize;
 use winit::event::{DeviceEvent, ElementState, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
-use winit::window::{Window, WindowId};
+use winit::window::{CursorGrabMode, Window, WindowId};
 
 use wolf3d::assets::Assets;
 use wolf3d::audio::Audio;
@@ -35,6 +35,8 @@ struct State {
     input: Input,
     /// Mouse motion accumulated since the last tick, in pixels
     mouse_dx: f32,
+    /// True while the cursor is grabbed and hidden for mouse look
+    mouse_captured: bool,
     frame: Vec<u8>,
     /// Per-destination-pixel source columns and rows for the nearest neighbour scale
     columns: Vec<usize>,
@@ -64,6 +66,7 @@ impl State {
             assets,
             input: Input::default(),
             mouse_dx: 0.0,
+            mouse_captured: false,
             frame: vec![0; FRAME_WIDTH * FRAME_HEIGHT * 4],
             columns: Vec::new(),
             rows: Vec::new(),
@@ -83,6 +86,31 @@ impl State {
         let width = NonZeroU32::new(size.width).unwrap_or(NonZeroU32::MIN);
         let height = NonZeroU32::new(size.height).unwrap_or(NonZeroU32::MIN);
         let _ = self.surface.resize(width, height);
+    }
+
+    /// Grabs and hides the cursor while the player is in the floor, and hands it back everywhere
+    /// else. Called whenever the mode or the focus can have changed, so Escape, the tally screens
+    /// and Alt-Tab always leave a usable pointer behind.
+    fn update_mouse_capture(&mut self) {
+        let wanted = self.window.has_focus() && self.game.mode.captures_mouse();
+        if wanted == self.mouse_captured {
+            return;
+        }
+        self.mouse_captured = wanted;
+
+        if !wanted {
+            self.window.set_cursor_visible(true);
+            let _ = self.window.set_cursor_grab(CursorGrabMode::None);
+            return;
+        }
+
+        // A true lock first; backends that cannot lock the pointer (macOS among them) only confine
+        // it to the window, which is enough because the view turns on relative motion.
+        let grabbed = self.window.set_cursor_grab(CursorGrabMode::Locked).is_ok()
+            || self.window.set_cursor_grab(CursorGrabMode::Confined).is_ok();
+        // Hide it only once something is holding the pointer in place: an invisible cursor free to
+        // wander onto the desktop would be worse than a visible one.
+        self.window.set_cursor_visible(!grabbed);
     }
 
     /// Rebuilds the engine world when the game moved to a different floor
@@ -106,6 +134,7 @@ impl State {
         }
 
         self.enter_floor_if_changed();
+        self.update_mouse_capture();
     }
 
     fn draw(&mut self) {
@@ -181,8 +210,8 @@ impl State {
             }
             KeyCode::KeyA => self.input.strafe_left = down,
             KeyCode::KeyD => self.input.strafe_right = down,
-            KeyCode::ArrowLeft => self.input.turn_right = down,
-            KeyCode::ArrowRight => self.input.turn_left = down,
+            KeyCode::ArrowLeft => self.input.turn_left = down,
+            KeyCode::ArrowRight => self.input.turn_right = down,
             KeyCode::ShiftLeft | KeyCode::ShiftRight => self.input.run = down,
             KeyCode::ControlLeft | KeyCode::ControlRight => self.input.shoot = down,
             KeyCode::Tab => {}
@@ -256,10 +285,13 @@ impl ApplicationHandler for App {
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(_) => state.resize(),
-            WindowEvent::Focused(false) => {
-                // Never leave a key stuck down because focus went elsewhere
-                state.input.clear_all();
-                state.mouse_dx = 0.0;
+            WindowEvent::Focused(focused) => {
+                if !focused {
+                    // Never leave a key stuck down because focus went elsewhere
+                    state.input.clear_all();
+                    state.mouse_dx = 0.0;
+                }
+                state.update_mouse_capture();
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 if let PhysicalKey::Code(code) = event.physical_key {
@@ -313,7 +345,11 @@ impl ApplicationHandler for App {
             return;
         };
         if let DeviceEvent::MouseMotion { delta } = event {
-            state.mouse_dx += delta.0 as f32;
+            // Ignored while the cursor is free, so moving the pointer around a menu cannot spin the
+            // player the moment the next floor starts
+            if state.mouse_captured {
+                state.mouse_dx += delta.0 as f32;
+            }
         }
     }
 

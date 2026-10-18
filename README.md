@@ -33,7 +33,7 @@ If no sound card is available the game says so and runs silently rather than fai
 | Key | Action |
 | --- | --- |
 | `W` `A` `S` `D` / arrows | Move and strafe (`A`/`D` strafe, left/right arrows turn) |
-| Mouse | Turn |
+| Mouse | Turn (the cursor is hidden and locked while playing) |
 | `Shift` | Run |
 | `Space` / `E` | Open doors, push secret walls, throw the elevator switch |
 | `Ctrl` / left mouse | Fire (hold for the machine gun and chaingun) |
@@ -139,7 +139,9 @@ files are real screenshots of the running binary. There is a page to look at the
   human playing them here.
 - The renderer is the original's 320x200 software raycaster: no looking up and down, no
   translucent surfaces, no floor/ceiling casting beyond flat textures.
-- Mouse look reads relative motion and does not hide or lock the cursor.
+- Mouse look reads relative motion and hides and locks the cursor while the player is in the floor;
+  the pointer comes back for the menus, the pause screen and the tally, and whenever the window
+  loses focus.
 - The sound is synthesised: it is meant to sit in the same register as the original, not to
   reproduce it.
 

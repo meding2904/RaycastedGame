@@ -1169,8 +1169,8 @@ impl Raycaster {
 
         // The camera plane must stay perpendicular to the direction and 0.66 units long,
         // which is the horizontal field of view of the original games.
-        self.plane.x = self.dir.y * 0.66;
-        self.plane.y = -self.dir.x * 0.66;
+        self.plane.x = -self.dir.y * 0.66;
+        self.plane.y = self.dir.x * 0.66;
     }
 
     /// Sets the movement speed in map units the next move call will use

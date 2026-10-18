@@ -95,6 +95,14 @@ pub enum Mode {
     Victory,
 }
 
+impl Mode {
+    /// Whether the mouse is steering the view. The window hides and grabs the cursor exactly here,
+    /// so the pointer is out of the way in a firefight and back for the menus and the tally.
+    pub fn captures_mouse(self) -> bool {
+        matches!(self, Mode::Playing | Mode::Dying)
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Stats {
     pub kills: i32,
@@ -535,13 +543,13 @@ impl Game {
         self.stats.time += TICK_DT;
         self.player.tick_timers(TICK_DT);
 
-        // --- Turning and movement
+        // --- Turning and movement. Angles run clockwise on the map, so increasing one turns right
         let mut angle = self.player.angle + input.mouse_dx * crate::player::MOUSE_SENSITIVITY;
         if input.turn_left {
-            angle += TURN_SPEED * TICK_DT;
+            angle -= TURN_SPEED * TICK_DT;
         }
         if input.turn_right {
-            angle -= TURN_SPEED * TICK_DT;
+            angle += TURN_SPEED * TICK_DT;
         }
         self.player.angle = angle;
 
@@ -557,12 +565,12 @@ impl Game {
             delta.1 -= fy * speed * TICK_DT;
         }
         if input.strafe_left {
-            delta.0 += -fy * speed * TICK_DT * 0.85;
-            delta.1 += fx * speed * TICK_DT * 0.85;
-        }
-        if input.strafe_right {
             delta.0 += fy * speed * TICK_DT * 0.85;
             delta.1 += -fx * speed * TICK_DT * 0.85;
+        }
+        if input.strafe_right {
+            delta.0 += -fy * speed * TICK_DT * 0.85;
+            delta.1 += fx * speed * TICK_DT * 0.85;
         }
 
         if delta != (0.0, 0.0) {
@@ -1231,6 +1239,22 @@ mod tests {
     }
 
     #[test]
+    fn the_cursor_is_captured_only_while_the_player_is_in_the_floor() {
+        assert!(Mode::Playing.captures_mouse());
+        assert!(Mode::Dying.captures_mouse());
+        for mode in [
+            Mode::DifficultySelect,
+            Mode::Paused,
+            Mode::FloorComplete,
+            Mode::Intermission,
+            Mode::GameOver,
+            Mode::Victory,
+        ] {
+            assert!(!mode.captures_mouse(), "{mode:?} must hand the cursor back");
+        }
+    }
+
+    #[test]
     fn a_floor_loads_its_garrison_and_its_loot() {
         let game = started_game(Difficulty::Normal);
         assert_eq!(game.mode, Mode::Playing);
@@ -1278,6 +1302,67 @@ mod tests {
             game.player.x < 10.0,
             "the player should be stopped by the cell wall, at {}",
             game.player.x
+        );
+    }
+
+    #[test]
+    fn a_left_key_turns_left_and_a_right_key_turns_right() {
+        let mut game = started_game(Difficulty::Normal);
+        game.player.angle = 0.0;
+        game.tick(&Input {
+            turn_left: true,
+            ..Input::default()
+        });
+        assert!(
+            game.player.angle < 0.0,
+            "turn_left must swing the heading left, got {}",
+            game.player.angle
+        );
+
+        let mut game = started_game(Difficulty::Normal);
+        game.player.angle = 0.0;
+        game.tick(&Input {
+            turn_right: true,
+            ..Input::default()
+        });
+        assert!(
+            game.player.angle > 0.0,
+            "turn_right must swing the heading right, got {}",
+            game.player.angle
+        );
+    }
+
+    #[test]
+    fn moving_the_mouse_right_turns_right() {
+        let mut game = started_game(Difficulty::Normal);
+        game.player.angle = 0.0;
+        game.tick(&Input {
+            mouse_dx: 40.0,
+            ..Input::default()
+        });
+        assert!(
+            game.player.angle > 0.0,
+            "a mouse pushed right must turn right, got {}",
+            game.player.angle
+        );
+    }
+
+    #[test]
+    fn strafing_left_moves_to_the_left_of_where_the_player_faces() {
+        let mut game = started_game(Difficulty::Normal);
+        game.player.angle = 0.0; // facing east, so the player's left is north, -y
+        let (x, y) = (game.player.x, game.player.y);
+        game.tick(&Input {
+            strafe_left: true,
+            ..Input::default()
+        });
+        assert!(
+            game.player.y < y && (game.player.x - x).abs() < 0.2,
+            "strafing left from ({} , {}) went to ({}, {})",
+            x,
+            y,
+            game.player.x,
+            game.player.y
         );
     }
 

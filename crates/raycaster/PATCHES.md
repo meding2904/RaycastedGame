@@ -38,7 +38,11 @@ Camera access, so the game can own movement and collision instead of fighting th
 
 - `pos()`, `dir()`, `angle()`, `set_dir_angle(radians)`, `set_move_speed(speed)`.
   `set_dir_angle` normalizes the direction and rebuilds the camera plane perpendicular to it,
-  keeping upstream's 0.66 horizontal FOV.
+  keeping upstream's 0.66 horizontal FOV. The plane is `(-dir.y, dir.x) * 0.66`, not upstream's
+  `(dir.y, -dir.x)`: our maps are authored with y increasing downwards, and upstream's sign turned
+  every view into a mirror image, so pressing left turned the world right and the mouse ran
+  backwards. `tests/orientation.rs` pins the convention: facing north, west is on the left,
+  east is on the right, increasing the heading turns right.
 - `move_by(world, dx, dy)`, used by `go_forward`/`go_backward`, plus new
   `strafe_left`/`strafe_right`. `move_by` tests both axes independently, which fixes upstream's
   `go_backward`, whose second test uses a position it has already modified.
