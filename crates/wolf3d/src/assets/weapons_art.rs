@@ -91,21 +91,20 @@ fn muzzle(c: &mut Canvas, cx: i32, cy: i32, rx: i32, ry: i32) {
     c.ellipse(cx, cy - 1, (rx - 1).max(1), (ry - 1).max(1), STEEL_LIT);
     c.ellipse(cx, cy, (rx - 3).max(1), (ry - 2).max(1), STEEL_DARK);
     c.ellipse(cx, cy, (rx - 4).max(1), (ry - 3).max(1), BORE);
-    c.hline(cx - (rx - 3), cy - ry + 1, (rx * 2 - 6).max(1), STEEL_HI);
+    c.hline(cx - rx + 2, cy - ry + 1, (rx / 2).max(1), STEEL_HI);
 }
 
 /// A finger wrapping a grip: lit knuckle, shaded underside and a nail on the tip
 fn finger(c: &mut Canvas, a: (i32, i32), b: (i32, i32), radius: i32) {
     limb(c, a, b, radius + 1, SKIN_DEEP);
     limb(c, a, b, radius, SKIN);
-    limb(
-        c,
-        (a.0, a.1 - radius / 2),
-        (b.0, b.1 - radius / 2),
-        (radius / 2).max(1),
+    c.hline(
+        a.0.min(b.0),
+        a.1.max(b.1) - radius / 2,
+        (b.0 - a.0).abs().max(1),
         SKIN_LIT,
     );
-    c.circle(b.0, b.1 - 1, (radius / 2).max(1), NAIL);
+    c.circle(b.0, b.1, (radius / 2).max(1), NAIL);
 }
 
 /// A forearm with a cuff, coming in from the bottom edge
@@ -129,25 +128,22 @@ fn forearm(c: &mut Canvas, shoulder: (i32, i32), wrist: (i32, i32), radius: i32)
 
 /// One hand: a palm, a thumb laid along the gun and fingers curling round the grip.
 /// `side` is -1 for a hand reaching in from the left, 1 for one from the right.
-fn hand(c: &mut Canvas, palm: (i32, i32), side: i32, reach: i32, fingers: i32) {
+fn hand(c: &mut Canvas, palm: (i32, i32), side: i32, reach: i32, fingers: i32, tone: i32) {
     let (px, py) = palm;
-    c.ellipse(px, py + 3, 9, 10, SKIN_DEEP);
-    c.ellipse(px, py, 9, 10, SKIN);
-    c.ellipse(px - side * 2, py - 3, 5, 5, SKIN_LIT);
+    let skin = shade(SKIN, tone);
+    let lit = shade(SKIN_LIT, tone);
+    c.ellipse(px, py, 8, 9, SKIN_DEEP);
+    c.ellipse(px, py - 1, 7, 8, skin);
+    c.ellipse(px - side * 2, py - 3, 3, 3, lit);
 
     for i in 0..fingers {
         let y = py - 5 + i * 5;
-        finger(c, (px + side * 4, y), (reach, y), 2);
+        let extra = [0, 2, 0, -2][i as usize];
+        finger(c, (px + side * 2, y), (reach - side * extra, y), 2);
     }
 
     // Thumb laid along the top of the grip
-    limb(
-        c,
-        (px + side * 2, py - 8),
-        (reach + side * 5, py - 10),
-        3,
-        SKIN,
-    );
+    limb(c, (px + side, py - 8), (reach + side * 5, py - 10), 2, skin);
     c.circle(reach + side * 5, py - 10, 2, NAIL);
 }
 
@@ -228,10 +224,10 @@ fn knife(c: &mut Canvas, frame: usize) {
         WOOD_LIT,
     );
 
-    forearm(c, (104, 128), (94, 108), 10);
-    hand(c, (82, 94), 1, 64, 4);
-    forearm(c, (24, 128), (36, 116), 11);
-    hand(c, (44, 112), -1, 62, 3);
+    forearm(c, (104, 128), (92, 106), 10);
+    hand(c, (78, 100), 1, 64, 4, 0);
+    forearm(c, (24, 128), (38, 118), 11);
+    hand(c, (42, 116), -1, 62, 3, -14);
 
     if frame > 0 {
         for i in 0..3 {
@@ -252,57 +248,51 @@ fn pistol(c: &mut Canvas, frame: usize) {
         2 => 12,
         _ => 0,
     };
-    let top = 26 + recoil;
+    let top = 24 + recoil;
+    let (cx, w) = (60, 24);
 
-    muzzle(c, 60, top, 9, 5);
-    metal(c, 46, top + 3, 28, 44, STEEL);
-    c.rect(46, top + 12, 9, 6, BORE);
-    for i in 0..4 {
-        c.vline(64 + i * 2, top + 10, 12, STEEL_DARK);
+    // Slide seen from behind, with the rear sight and hammer at the near edge
+    muzzle(c, cx, top + 2, 7, 4);
+    metal(c, cx - w / 2, top + 4, w, 44, STEEL);
+    c.hline(cx - w / 2 + 2, top + 4, w - 4, STEEL_HI);
+    c.rect(cx - 7, top + 5, 4, 3, STEEL_DARK);
+    c.rect(cx + 3, top + 5, 4, 3, STEEL_DARK);
+    c.rect(cx - w / 2 + 3, top + 14, 8, 7, BORE);
+    for i in 0..3 {
+        c.vline(cx + 5 + i * 2, top + 30, 9, STEEL_DARK);
     }
-    c.hline(46, top + 46, 28, STEEL_LIT);
-    metal(c, 48, top + 47, 24, 10, shade(STEEL, -16));
-    c.rect(54, top + 49, 12, 4, STEEL_LIT);
+    metal(c, cx - w / 2 + 2, top + 48, w - 4, 8, shade(STEEL, -18));
+    c.rect(cx - 3, top + 44, 6, 5, STEEL_DARK);
 
-    // Grip, angled back to the right like a hand holding it
+    // Grip running down and back between the hands
     quad(
         c,
-        (52, top + 57),
-        (70, top + 57),
-        (78, top + 92),
-        (58, top + 92),
+        (cx - 11, top + 54),
+        (cx + 11, top + 54),
+        (cx + 18, 122),
+        (cx - 6, 122),
         WOOD,
     );
     quad(
         c,
-        (52, top + 57),
-        (56, top + 57),
-        (62, top + 92),
-        (58, top + 92),
+        (cx - 11, top + 54),
+        (cx - 6, top + 54),
+        (cx - 2, 122),
+        (cx - 6, 122),
         WOOD_LIT,
     );
-    quad(
-        c,
-        (66, top + 57),
-        (70, top + 57),
-        (78, top + 92),
-        (74, top + 92),
-        WOOD_DARK,
-    );
-    for row in 0..5 {
-        let y = top + 64 + row * 6;
-        for col in 0..3 {
-            c.set(58 + col * 5 - row / 2, y, WOOD_DARK);
-        }
+    for row in 0..6 {
+        c.set(cx - 3 + row / 2, top + 62 + row * 9, WOOD_DARK);
+        c.set(cx + 7 - row / 2, top + 62 + row * 9, WOOD_DARK);
     }
 
-    forearm(c, (110, 128), (92, 106), 10);
-    hand(c, (80, top + 78), 1, 60, 4);
-    forearm(c, (18, 128), (36, 116), 11);
-    hand(c, (42, top + 96), -1, 64, 3);
+    forearm(c, (112, 140), (96, 112), 10);
+    hand(c, (82, 100), 1, 62, 4, 0);
+    forearm(c, (12, 140), (28, 122), 11);
+    hand(c, (36, 112), -1, 64, 3, -14);
 
     if frame > 0 {
-        flash(c, 60, top - 8, if frame == 1 { 20 } else { 12 });
+        flash(c, cx, top - 8, if frame == 1 { 20 } else { 12 });
     }
 }
 
@@ -313,59 +303,53 @@ fn machine_gun(c: &mut Canvas, frame: usize) {
         2 => 11,
         _ => 0,
     };
-    let top = 24 + recoil;
+    let top = 22 + recoil;
+    let cx = 60;
 
-    metal(c, 42, top, 36, 26, STEEL);
+    muzzle(c, cx, top + 2, 9, 4);
+    metal(c, cx - 16, top + 4, 32, 28, STEEL);
     for i in 0..4 {
-        c.rect(46 + i * 8, top + 7, 5, 12, STEEL_DARK);
-        c.hline(46 + i * 8, top + 7, 5, shade(STEEL_DARK, 34));
+        c.ellipse(cx - 12 + i * 7, top + 13, 2, 3, BORE);
+        c.ellipse(cx - 12 + i * 7, top + 22, 2, 3, BORE);
     }
-    muzzle(c, 60, top + 1, 12, 5);
-    metal(c, 40, top + 26, 40, 26, shade(STEEL, -10));
-    c.rect(46, top + 34, 10, 6, BORE);
+    metal(c, cx - 19, top + 32, 38, 26, shade(STEEL, -12));
+    c.rect(cx - 13, top + 40, 9, 6, BORE);
     for i in 0..3 {
-        c.vline(44 + i * 3, top + 40, 8, STEEL_DARK);
+        c.vline(cx - 15 + i * 3, top + 46, 8, STEEL_DARK);
     }
+    c.hline(cx - 19, top + 32, 38, STEEL_LIT);
 
-    c.circle(34, top + 62, 14, STEEL_DARK);
-    c.circle(34, top + 60, 12, STEEL_LIT);
-    c.circle(34, top + 60, 9, STEEL);
-    c.circle(34, top + 60, 4, STEEL_LIT);
-    for i in 0..6 {
-        let angle = i as f32 * std::f32::consts::TAU / 6.0;
-        c.rect(
-            34 + (angle.cos() * 8.0) as i32,
-            top + 60 + (angle.sin() * 8.0) as i32,
-            2,
-            2,
-            BRASS,
-        );
-    }
+    // Drum magazine clamped to the left of the receiver
+    c.circle(cx - 26, top + 60, 13, STEEL_DARK);
+    c.circle(cx - 26, top + 58, 11, STEEL_LIT);
+    c.circle(cx - 26, top + 58, 8, STEEL);
+    c.circle(cx - 26, top + 58, 3, STEEL_LIT);
 
+    // Wooden stock running down into the hands
     quad(
         c,
-        (64, top + 52),
-        (80, top + 52),
-        (84, 128),
-        (62, 128),
+        (cx - 12, top + 58),
+        (cx + 12, top + 58),
+        (cx + 16, 128),
+        (cx - 12, 128),
         WOOD,
     );
     quad(
         c,
-        (64, top + 52),
-        (68, top + 52),
-        (66, 128),
-        (62, 128),
+        (cx - 12, top + 58),
+        (cx - 6, top + 58),
+        (cx - 4, 128),
+        (cx - 12, 128),
         WOOD_LIT,
     );
 
-    forearm(c, (112, 128), (94, 108), 10);
-    hand(c, (82, top + 70), 1, 62, 4);
-    forearm(c, (16, 128), (34, 114), 11);
-    hand(c, (44, top + 88), -1, 66, 3);
+    forearm(c, (112, 140), (96, 112), 10);
+    hand(c, (82, 104), 1, 60, 4, 0);
+    forearm(c, (12, 140), (28, 122), 11);
+    hand(c, (36, 116), -1, 62, 3, -14);
 
     if frame > 0 {
-        flash(c, 60, top - 9, if frame == 1 { 24 } else { 14 });
+        flash(c, cx, top - 9, if frame == 1 { 24 } else { 14 });
     }
 }
 
@@ -377,54 +361,58 @@ fn chaingun(c: &mut Canvas, frame: usize) {
         3 => 6,
         _ => 0,
     };
-    let top = 22 + recoil;
+    let top = 20 + recoil;
+    let cx = 60;
     let spin = frame as f32 * std::f32::consts::FRAC_PI_4;
 
+    // Four barrels turning inside a collar
     for i in 0..4 {
         let angle = spin + i as f32 * std::f32::consts::FRAC_PI_2;
-        let bx = 60 + (angle.cos() * 11.0) as i32;
-        let by = top + 10 + (angle.sin() * 5.0) as i32;
-        c.rect(bx - 4, by - 8, 8, 22, STEEL);
-        c.vline(bx - 4, by - 8, 22, STEEL_LIT);
-        c.vline(bx + 3, by - 8, 22, STEEL_DARK);
-        muzzle(c, bx, by - 8, 5, 3);
+        let bx = cx + (angle.cos() * 8.0) as i32;
+        let by = top + 10 + (angle.sin() * 4.0) as i32;
+        c.rect(bx - 4, by - 10, 8, 26, STEEL);
+        c.vline(bx - 4, by - 10, 26, STEEL_LIT);
+        c.vline(bx + 3, by - 10, 26, STEEL_DARK);
+        muzzle(c, bx, by - 10, 5, 3);
     }
-    metal(c, 40, top + 12, 40, 10, STEEL_LIT);
-    for i in 0..3 {
-        c.rect(46 + i * 11, top + 14, 4, 4, STEEL_DARK);
-    }
+    c.ellipse(cx, top + 5, 16, 7, STEEL_DARK);
+    c.ellipse(cx, top + 4, 14, 6, STEEL_LIT);
 
-    metal(c, 36, top + 22, 48, 32, shade(STEEL, -8));
+    metal(c, cx - 19, top + 26, 38, 10, STEEL_LIT);
     for i in 0..3 {
-        c.hline(38, top + 28 + i * 9, 44, STEEL_DARK);
-        c.hline(38, top + 29 + i * 9, 44, shade(STEEL, 20));
+        c.rect(cx - 14 + i * 10, top + 29, 4, 4, STEEL_DARK);
     }
-    metal(c, 50, top + 28, 20, 18, STEEL_LIT);
-    c.rect(56, top + 33, 8, 8, STEEL_DARK);
+    metal(c, cx - 21, top + 36, 42, 30, shade(STEEL, -8));
+    for i in 0..3 {
+        c.hline(cx - 19, top + 42 + i * 9, 38, STEEL_DARK);
+        c.hline(cx - 19, top + 43 + i * 9, 38, shade(STEEL, 20));
+    }
+    metal(c, cx - 10, top + 42, 20, 18, STEEL_LIT);
+    c.rect(cx - 4, top + 47, 8, 8, STEEL_DARK);
 
     // Ammo belt feeding in from the left
-    metal(c, 26, top + 34, 12, 22, shade(STEEL, -20));
+    metal(c, cx - 34, top + 46, 12, 22, shade(STEEL, -20));
     for i in 0..4 {
-        c.rect(22, top + 36 + i * 5, 14, 3, BRASS);
-        c.hline(22, top + 36 + i * 5, 14, shade(BRASS, 44));
+        c.rect(cx - 38, top + 48 + i * 5, 14, 3, BRASS);
+        c.hline(cx - 38, top + 48 + i * 5, 14, shade(BRASS, 44));
     }
 
     quad(
         c,
-        (62, top + 52),
-        (78, top + 52),
-        (82, 128),
-        (60, 128),
+        (cx - 8, top + 64),
+        (cx + 10, top + 64),
+        (cx + 14, 128),
+        (cx - 8, 128),
         WOOD,
     );
 
-    forearm(c, (112, 128), (94, 108), 10);
-    hand(c, (80, top + 74), 1, 60, 4);
-    forearm(c, (16, 128), (32, 114), 11);
-    hand(c, (42, top + 92), -1, 64, 3);
+    forearm(c, (112, 140), (96, 112), 10);
+    hand(c, (82, 106), 1, 60, 4, 0);
+    forearm(c, (12, 140), (28, 122), 11);
+    hand(c, (36, 118), -1, 62, 3, -14);
 
     if frame > 0 {
-        flash(c, 60, top - 4, if frame == 1 { 22 } else { 14 });
+        flash(c, cx, top - 6, if frame == 1 { 22 } else { 14 });
     }
 }
 
@@ -465,4 +453,39 @@ pub fn atlas() -> Atlas {
         }
     }
     atlas
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn opaque(atlas: &Atlas, x: i32, y: i32) -> bool {
+        let off = ((y * atlas.width + x) * 4) as usize;
+        atlas.data[off + 3] != 0
+    }
+
+    #[test]
+    fn every_frame_is_drawn_and_keeps_off_the_side_edges() {
+        let atlas = atlas();
+        let cell = WEAPON_CELL;
+
+        for index in 0..atlas.cell_count() {
+            let x0 = (index as i32 % atlas.cols) * cell;
+            let y0 = (index as i32 / atlas.cols) * cell;
+            let mut painted = 0;
+
+            for y in 0..cell {
+                for x in 0..cell {
+                    if !opaque(&atlas, x0 + x, y0 + y) {
+                        continue;
+                    }
+                    painted += 1;
+                    let on_edge = x == 0 || x == cell - 1;
+                    assert!(!on_edge, "cell {index} paints the edge at ({x}, {y})");
+                }
+            }
+
+            assert!(painted > cell * cell / 8, "cell {index} is nearly empty");
+        }
+    }
 }
